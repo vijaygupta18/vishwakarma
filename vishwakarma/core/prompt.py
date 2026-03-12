@@ -5,10 +5,7 @@ Prompts are composable: each PromptSection can be toggled on/off
 via behavior_controls in the API request.
 """
 from enum import Enum
-from pathlib import Path
 from typing import Any
-
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 # ── Prompt Sections ───────────────────────────────────────────────────────────
 
@@ -17,6 +14,7 @@ class Section(str, Enum):
     PLANNING = "planning"
     GUIDELINES = "guidelines"
     RUNBOOKS = "runbooks"
+    KNOWLEDGE = "knowledge"
     ASK_USER = "ask_user"
 
 
@@ -28,45 +26,61 @@ troubleshooting agent for SRE Platform. You investigate infrastructure incidents
 diagnose root causes, and recommend fixes.
 
 You have access to tools to query Kubernetes, metrics (Prometheus/VictoriaMetrics), \
-logs (Elasticsearch, Loki), databases, cloud services, and more.
+logs (Elasticsearch, Loki), cloud services (AWS CLI), and more.
 
 Always:
 - Gather evidence before concluding
-- Be specific: include service names, namespaces, pod names, timestamps
+- Be specific: include service names, namespaces, pod names, timestamps, metric values
 - State what you checked and what you found (or didn't find)
-- Give a clear root cause and actionable recommendations
-- If a tool returns no data, say so and try a different angle
+- Give a clear root cause with actionable recommendations
+- Use hedging language (possible, likely, may) when root cause cannot be directly confirmed
 """
 
 INVESTIGATION_PHASES = """\
 ## Investigation Protocol
 
-**MANDATORY FIRST ACTION:** Before anything else, call `todo_write` with your full investigation plan.
-List every step you intend to take with status `pending`. Update it to `in_progress` when starting
-a step, `completed` when done. This shows operators exactly what you are doing and how much is left.
+**MANDATORY FIRST ACTION:** Call `todo_write` with your full investigation plan before anything else.
+- List every step with status `pending`
+- On the FIRST `todo_write` call: mark all INDEPENDENT tasks as `in_progress` simultaneously and start executing them NOW in the same response (parallel tool calls)
+- Update status `in_progress` → `completed` as each step finishes
+- If you discover new investigation areas, add them to the todo list
 
-**RUNBOOK TAKES PRECEDENCE:** If a runbook is provided below, follow the runbook's steps in order as
-your investigation plan. The runbook is purpose-built for this alert type. Do NOT default to generic
-Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or other sources.
+**RUNBOOK TAKES PRECEDENCE:** If a runbook is provided, follow the runbook's steps as your investigation plan. Do NOT default to generic Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or other sources.
 
-If no runbook is provided, investigate in 3 structured phases:
+If no runbook is provided, investigate in structured phases:
 
-### PHASE 1 — RECON (run tools in parallel, broad signals)
-Gather wide signals simultaneously. Fire multiple bash tool calls in one response.
-Use raw bash commands — kubectl, aws CLI, stern, grep — directly via the `bash` tool.
-Example parallel calls: `kubectl get pods -n atlas`, `aws cloudwatch describe-alarms --region <region>`, `stern -n atlas app --since=30m`
+### PHASE 1 — RECON (parallel, broad signals)
+Gather wide signals simultaneously — fire multiple bash/tool calls in one response.
+Use raw bash commands via the `bash` tool: kubectl, aws CLI, stern, grep.
+Example parallel calls: `kubectl get pods -n atlas`, `aws rds describe-db-instances`, `stern -n atlas app --since=30m`
 
 ### PHASE 2 — HYPOTHESES
 After phase 1 results arrive, state your top 3 hypotheses BEFORE running more tools:
 ```
-Hypothesis 1: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence so far: <what points to this>
-Hypothesis 2: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence so far: <what points to this>
-Hypothesis 3: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence so far: <what points to this>
+Hypothesis 1: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 2: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 3: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
 ```
 Then test each hypothesis with targeted tool calls. Eliminate, confirm, or update confidence.
 
+### PHASE EVALUATION (after each phase)
+After completing all tasks in a phase, stop and ask yourself:
+- Do I have enough information to completely answer the question?
+- Have I applied five whys to reach the ACTUAL root cause (not just a symptom)?
+- Are there gaps, unexplored angles, or additional root causes to check?
+- Did investigation reveal new questions that need exploration?
+
+If ANY answer is "yes → investigation incomplete" → create a new phase with `todo_write` and continue.
+
+### FINAL REVIEW (mandatory before final answer)
+Before writing your final answer:
+1. Re-read the original user question word-by-word
+2. Verify every claim is backed by direct tool output — not assumed
+3. Verify the five whys chain leads to actual root cause, not a symptom
+4. Check for overconfident claims: if no direct evidence, use "likely" or "possible"
+
 ### PHASE 3 — ROOT CAUSE & RECOMMENDATIONS
-Once you have confirmed the root cause, end your investigation with this EXACT structure:
+End your investigation with this EXACT structure:
 
 ## Root Cause
 <1-2 sentences stating the confirmed root cause>
@@ -95,35 +109,48 @@ WHAT_CHANGED = """\
 If investigating a Kubernetes or application alert without a runbook, run these bash commands simultaneously:
 1. `kubectl rollout history deployment/<service> -n <namespace>` — detect recent deploys
 2. `kubectl get events -n <namespace> --sort-by=.lastTimestamp | tail -30` — detect K8s-level changes
-3. Query Prometheus/VictoriaMetrics for error rate at `alert_start_time - 1h` vs `alert_start_time`
+3. Use `prometheus_query_range` for error rate at `alert_start_time - 1h` vs `alert_start_time`
 
 Pattern:
-- **Sudden spike** at a specific time → look for deploy, config change, or traffic surge at that exact time
-- **Gradual increase** over hours → memory leak, connection pool exhaustion, disk fill, slow query accumulation
+- **Sudden spike** at a specific time → deploy, config change, or traffic surge at that time
+- **Gradual increase** over hours → memory leak, connection pool exhaustion, disk fill
 - **Step function** (stable → new stable level) → quota hit, rate limit, downstream degradation
 
-**For AWS alerts (RDS, ElastiCache, ALB, etc.):** Skip this section. Follow the runbook which starts with AWS CLI commands, not Kubernetes.
+**For AWS alerts (RDS, ElastiCache, ALB, etc.):** Skip this section. Follow the runbook.
 """
 
 GENERAL_GUIDELINES = """\
 ## Investigation Guidelines
 
-**Timing:**
-- Always use the alert's start time as your anchor. Query the window from `start - 10min` to `start + 30min`.
-- If `startsAt` is given, use it. Never query arbitrary recent time ranges.
+**CRITICAL TOOL RULES (violations cause investigation loops — follow strictly):**
+- **NEVER call a tool with identical parameters more than once.** If a tool already ran with those exact params, reuse its result — do NOT call it again.
+- **If a tool returns no data or an error → modify the parameters and try a different approach.** Do NOT retry the same call. Try: different time window, looser query, different namespace, different service, different tool.
+- **If `aws cloudwatch describe-alarms --state-value ALARM` returns empty → the alarm has already resolved (normal for RDS/CPU spikes). Do NOT retry this command.** Use `startsAt` from the alert as your time anchor and proceed with investigation.
+- **If a bash command returns non-zero exit code → do not retry the same command.** Read the error, fix the command, or try an alternative approach.
 
-**Tool strategy:**
-- Fire multiple independent tool calls in a SINGLE response (they execute in parallel)
-- Start broad (metrics, events) before going narrow (specific pod logs, DB queries)
-- If a tool returns no data: try adjacent time windows, looser queries, or a different source
+**Timing:**
+- Always use the alert's `startsAt` as your anchor. Query window: `startsAt - 10min` to `startsAt + 1h`.
+- If `startsAt` not available, use `now - 30min`.
+- Never use arbitrary recent time ranges.
+
+**Tool routing (use the dedicated tool, not http_get):**
+- Metrics/PromQL → `prometheus_query` or `prometheus_query_range` (NEVER `http_get`)
+- Log search → `elasticsearch_search` or `loki_query` (NEVER `http_get`)
+- K8s/AWS/system commands → `bash` tool
+- External URLs only → `http_get`
+
+**Parallel execution:**
+- Fire ALL independent tool calls in a SINGLE response — they run in parallel
+- Start broad (metrics, events) before narrow (specific pod logs, DB queries)
 
 **Evidence quality:**
-- Always include timestamps with findings ("at 17:03:42 UTC, error rate jumped from 0.2% to 18%")
-- Correlate across sources: a pod OOM at 17:03 + metric spike at 17:03 = strong signal
-- Distinguish between cause and symptom (high CPU is often a symptom, not a cause)
+- Include timestamps with every finding ("at 17:03:42 UTC, error rate jumped from 0.2% to 18%")
+- Correlate across sources: pod OOM at 17:03 + metric spike at 17:03 = strong signal
+- Distinguish cause from symptom (high CPU is usually a symptom, not a cause)
+- Treat error messages as exact diagnostic evidence: `authentication failed` means the user EXISTS and password is wrong — never add "or the user may not exist"
 
 **Five Whys — drill to root cause:**
-Don't stop at the first "why". Apply iteratively:
+Do NOT stop at the first why. Apply iteratively:
 1. Why did the alert fire? → service X returned 5xx
 2. Why did service X return 5xx? → it couldn't connect to Redis
 3. Why couldn't it connect to Redis? → Redis CPU was at 100%
@@ -131,8 +158,9 @@ Don't stop at the first "why". Apply iteratively:
 5. Why did memory exhaust? → a new deployment 20 min earlier added a missing cache TTL
 
 **When to stop:**
-- Stop only when you can state the root cause with evidence OR when you've exhausted all reasonable angles
+- Stop only when you can state the root cause with evidence OR exhausted all reasonable angles
 - Never give up after one failed tool call — try an alternative approach
+- If investigation is inconclusive, state that clearly with what was checked and what's still unknown
 """
 
 RCA_OUTPUT_FORMAT = """\
@@ -143,17 +171,19 @@ Vague answers like "there may be a resource issue" are not acceptable.
 """
 
 ASK_USER_PROMPT = """\
-If you need clarification or additional context from the user, \
-you may ask ONE specific question before proceeding with the investigation.
+If the question is ambiguous or lacks critical details needed to investigate, ask ONE specific clarifying question before proceeding.
+Bias towards investigating with available information rather than asking.
 """
 
 
 def build_system_prompt(
-    toolsets: list,                      # list of Toolset objects
+    toolsets: list,                      # list of Toolset objects (enabled)
     cluster_name: str = "",
     runbooks: list[str] | None = None,
+    knowledge: str | None = None,        # site-specific knowledge base (from /data/knowledge.md)
     extra_prompt: str | None = None,
     sections_off: set[Section] | None = None,
+    all_toolsets: list | None = None,    # all toolsets including disabled (optional)
 ) -> str:
     """Build the complete system prompt for an investigation."""
     sections_off = sections_off or set()
@@ -177,12 +207,45 @@ def build_system_prompt(
     if toolsets:
         tool_lines = []
         for ts in toolsets:
-            if hasattr(ts, "description") and ts.description:
-                tool_lines.append(f"- **{ts.name}**: {ts.description}")
+            desc = getattr(ts, "description", "") or ""
+            if desc:
+                tool_lines.append(f"- **{ts.name}**: {desc}")
             else:
                 tool_lines.append(f"- **{ts.name}**")
-        if tool_lines:
-            parts.append("## Available Toolsets\n" + "\n".join(tool_lines))
+
+        tool_lines.append(
+            "\n**Tool routing rules:**\n"
+            "- Metrics/PromQL → use `prometheus_query` or `prometheus_query_range` (NEVER http_get)\n"
+            "- Log search → use `elasticsearch_search` or `loki_query` (NEVER http_get)\n"
+            "- K8s/AWS/system commands → use `bash` tool\n"
+            "- External URLs only → use `http_get`"
+        )
+        parts.append("## Available Toolsets\n" + "\n".join(tool_lines))
+
+    # Show disabled/failed toolsets so LLM understands the landscape (matches Holmes)
+    disabled = []
+    if all_toolsets:
+        from vishwakarma.core.tools import ToolsetHealth
+        enabled_names = {ts.name for ts in toolsets}
+        for ts in all_toolsets:
+            if ts.name not in enabled_names:
+                status = "disabled"
+                health = getattr(ts, "_health", None)
+                if health and health == ToolsetHealth.FAILED:
+                    status = f"failed — {getattr(ts, '_error', '')}"
+                disabled.append(f"- **{ts.name}**: {status}")
+
+    if disabled:
+        parts.append(
+            "## Disabled / Failed Toolsets\n"
+            "The following toolsets are not available. If investigation requires one of these, "
+            "tell the operator which toolset needs to be enabled.\n"
+            + "\n".join(disabled)
+        )
+
+    # Site knowledge base (always injected — contains infra-specific mappings and known commands)
+    if knowledge and Section.KNOWLEDGE not in sections_off:
+        parts.append(f"## Site Knowledge Base\n{knowledge.strip()}")
 
     # Runbooks
     if runbooks and Section.RUNBOOKS not in sections_off:

@@ -18,14 +18,15 @@ class ToolStatus(str):
 
 class ToolOutput(BaseModel):
     """Result of a single tool execution."""
-    tool_call_id: str
-    tool_name: str
+    tool_call_id: str = ""
+    tool_name: str = ""
     description: str = ""
     status: str = ToolStatus.SUCCESS
     output: Any = None          # structured data returned by tool
     error: str | None = None    # error message if status == ERROR
     invocation: str = ""        # the actual command/query that ran
     token_count: int = 0        # approximate token size of output
+    params: dict = Field(default_factory=dict)  # original call params — used by LoopGuard history check
 
 
 class PendingApproval(BaseModel):
@@ -71,7 +72,7 @@ class InvestigationMeta(BaseModel):
 
 class InvestigateRequest(BaseModel):
     """
-    POST /api/chat
+    POST /api/investigate
 
     Primary endpoint for asking Vishwakarma anything.
     """
@@ -83,6 +84,10 @@ class InvestigateRequest(BaseModel):
     approval_decisions: list[ApprovalDecision] = []
     extra_system_prompt: str | None = None      # append to system prompt
     images: list[dict] = []                     # vision inputs [{url, detail}]
+    files: list[str] = []                       # file contents to attach to prompt
+    runbooks: list[str] | None = None           # runbook content to include in prompt
+    bash_always_allow: bool = False             # skip approval for all bash commands
+    bash_always_deny: bool = False              # block all bash commands
     response_schema: dict | None = None         # JSON schema for structured output
     prompt_overrides: dict[str, bool] = {}      # toggle prompt components on/off
     trace_id: str | None = None

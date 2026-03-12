@@ -240,6 +240,11 @@ class VishwakarmaConfig:
         # Runbooks — auto-load all .md files from plugins/runbooks/ + any from config
         self.runbooks: list[str] = _load_runbooks(raw.get("runbooks", []))
 
+        # Site knowledge base — loaded from a .md file on the PVC (not baked into image)
+        # Contains infra-specific: instance names, alert→instance mappings, known working commands
+        self.knowledge_path: str = _env("VK_KNOWLEDGE_PATH", raw.get("knowledge_path", "/data/knowledge.md"))
+        self.knowledge: str = _load_knowledge(self.knowledge_path)
+
         # Alert deduplication window (seconds)
         self.dedup_window: int = int(
             _env("VK_DEDUP_WINDOW", str(raw.get("dedup_window", 300)))
@@ -282,6 +287,8 @@ class VishwakarmaConfig:
             executor=executor,
             max_steps=self.max_steps,
             cluster_name=self.cluster_name,
+            all_toolsets=toolset_manager.all_toolsets(),
+            knowledge=self.knowledge,
         )
 
     # ── Loader ─────────────────────────────────────────────────────────────────
@@ -358,6 +365,19 @@ def _env(key: str, fallback: Any = None) -> Any:
     """Return env var if set, else fallback."""
     val = os.environ.get(key)
     return val if val is not None else fallback
+
+
+def _load_knowledge(path: str) -> str:
+    """Load site-specific knowledge base from a markdown file (e.g. on PVC)."""
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not load knowledge base from {path}: {e}")
+        return ""
 
 
 def _load_runbooks(extra: list[str]) -> list[str]:

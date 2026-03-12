@@ -42,13 +42,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
         thread_ts = event.get("thread_ts") or event.get("ts")
         user = event.get("user", "")
 
-        # Strip bot mention from text
+        # Strip bot mention from text, then take only the user's actual line.
+        # When replying in a Slack thread, the event text sometimes includes the
+        # parent message context (Amazon Q alarm text) after a newline — discard it.
         question = _strip_mention(text).strip()
+        question = _clean_question(question)
 
         if not question:
             say(
                 text="Hi! I'm Vishwakarma, your SRE agent. Ask me to investigate something!\n"
-                     "Usage: `@vishwakarma <your question>`",
+                     "Usage: `@vishwakarma debug <your question>`",
                 thread_ts=thread_ts,
             )
             return
@@ -72,8 +75,21 @@ def start_bot(config: "VishwakarmaConfig") -> None:
         # anything else → simple LLM chat (no tools)
         is_investigation = question_lower.startswith("debug ")
         if is_investigation:
-            question = question[6:].strip()  # strip "debug " prefix
-            say(text=f"🔍 Investigating: *{question[:100]}*...", thread_ts=thread_ts)
+            question = question[len("debug "):].strip()  # strip "debug " prefix
+
+            # If the user replied in a thread, try to fetch the thread's parent message.
+            # Amazon Q posts CloudWatch alarms as thread starters — grab the alarm context.
+            thread_context = ""
+            if client and thread_ts and event.get("ts") != thread_ts:
+                thread_context = _fetch_thread_alarm_context(client, channel, thread_ts)
+
+            # Build investigation question: user question + alarm context if found
+            if thread_context:
+                full_question = f"{question}\n\n{thread_context}"
+            else:
+                full_question = question
+
+            say(text=f":mag: Investigating: *{question[:100]}*...", thread_ts=thread_ts)
         else:
             # Simple chat — just LLM, no tools, fast reply
             def run_chat():
@@ -90,7 +106,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             try:
                 llm = config.make_llm()
                 engine = config.make_engine(llm=llm, toolset_manager=toolset_manager)
-                result = engine.investigate(question=question)
+                result = engine.investigate(question=full_question)
 
                 analysis = result.answer or "(no analysis)"
                 meta = result.meta.model_dump() if result.meta else {}
@@ -274,6 +290,56 @@ def _strip_mention(text: str) -> str:
     """Remove <@USERID> mention from text."""
     import re
     return re.sub(r"<@[A-Z0-9]+>\s*", "", text).strip()
+
+
+def _clean_question(text: str) -> str:
+    """
+    Take only the user's actual typed line from a Slack message.
+
+    When the user replies in a thread, Slack sometimes appends the parent
+    message context (Amazon Q alarm text, 'replied to a thread:', etc.)
+    after a newline. Strip everything after the first newline.
+    """
+    # Take only the first non-empty line
+    first_line = text.split("\n")[0].strip()
+    return first_line if first_line else text.strip()
+
+
+def _fetch_thread_alarm_context(client, channel: str, thread_ts: str) -> str:
+    """
+    Fetch the parent message of a Slack thread and extract CloudWatch alarm context.
+    Returns a structured context string if the parent is a CloudWatch alarm, else "".
+    """
+    try:
+        resp = client.conversations_replies(
+            channel=channel,
+            ts=thread_ts,
+            limit=1,
+            inclusive=True,
+        )
+        messages = resp.get("messages", [])
+        if not messages:
+            return ""
+
+        parent_text = messages[0].get("text", "")
+        # Also check attachments (Amazon Q posts in attachments)
+        for att in messages[0].get("attachments", []):
+            parent_text += "\n" + att.get("text", "") + "\n" + att.get("fallback", "")
+
+        from vishwakarma.bot.cloudwatch import parse_cloudwatch_slack_message
+        alarm = parse_cloudwatch_slack_message(parent_text)
+        if alarm:
+            return (
+                f"## CloudWatch Alarm Context\n"
+                f"- **Alarm:** {alarm.get('alarm_name', '')}\n"
+                f"- **Region:** {alarm.get('region', '')}\n"
+                f"- **Metric:** {alarm.get('metric', '')}\n"
+                f"- **Reason:** {alarm.get('reason', '')}\n"
+                f"- **Fired at (startsAt):** {alarm.get('starts_at', '')}\n"
+            )
+    except Exception as e:
+        log.debug(f"Could not fetch thread context: {e}")
+    return ""
 
 
 def _help_text() -> str:

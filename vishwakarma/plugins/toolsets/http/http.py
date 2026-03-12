@@ -22,7 +22,13 @@ log = logging.getLogger(__name__)
 @register_toolset
 class HttpToolset(Toolset):
     name = "http"
-    description = "Check HTTP endpoints, fetch URLs, and test REST APIs"
+    description = (
+        "Check external HTTP endpoints and test REST APIs. "
+        "DO NOT use for Prometheus/VictoriaMetrics queries — use prometheus_query or prometheus_query_range instead. "
+        "DO NOT use for Elasticsearch queries — use elasticsearch_search instead. "
+        "DO NOT use for Loki/Grafana queries — use loki_query instead. "
+        "Use this only for external URLs, health checks, or APIs without a dedicated toolset."
+    )
 
     def __init__(self, config: dict):
         self.default_timeout: int = config.get("timeout", 30)

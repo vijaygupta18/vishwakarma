@@ -23,10 +23,21 @@ Investigate AWS RDS CPU/connection/memory alerts. Find:
 
 ## Step 1: Identify the Affected Instance and Metric
 
-Match the alarm name to a known instance. If unclear, list all alarms in ALARM state:
+**IMPORTANT: Alarms often resolve before investigation starts. If `--state-value ALARM` returns empty, the alarm has already cleared — this is normal and expected. DO NOT retry this command. Proceed using `startsAt` from the alert.**
+
+If the alert payload contains an alarm name, look it up directly (works regardless of current state):
 ```
-aws cloudwatch describe-alarms --state-value ALARM --region <region> \
-  --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason,StateUpdatedTimestamp]' --output table
+aws cloudwatch describe-alarms --alarm-names "<alarm-name-from-alert>" --region <region> \
+  --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason,StateUpdatedTimestamp,StateValue]' --output table
+```
+
+If no alarm name in alert, check what recently fired (all states):
+```
+aws cloudwatch describe-alarm-history --region <region> \
+  --start-date <startsAt-30min ISO8601> --end-date <startsAt+2h ISO8601> \
+  --history-item-type StateUpdate \
+  --query 'AlarmHistoryItems[?contains(HistorySummary, `RDS`) || contains(AlarmName, `rds`) || contains(AlarmName, `db`) || contains(AlarmName, `atlas`)].[AlarmName,Timestamp,HistorySummary]' \
+  --output table
 ```
 
 Then list all RDS instances to confirm the exact identifier:
@@ -34,6 +45,28 @@ Then list all RDS instances to confirm the exact identifier:
 aws rds describe-db-instances --region <region> \
   --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceClass,DBInstanceStatus,MultiAZ]' --output table
 ```
+
+**IMPORTANT: Always check all instances in the same cluster in parallel, not just the one in the alarm name.**
+Alert names do not always map 1:1 to instance names (e.g. `atlas-customer-v1-r1` → `bap-reader-1`).
+The actual high CPU may be on a different instance in the same cluster.
+
+- If alarm mentions `customer` → check `bap-reader-1`, `bap-writer-1`, `bap-reader-3` all at once
+- If alarm mentions `driver` → check `bpp-writer-1`, `bpp-reader-1` all at once
+
+Run CPU check for all cluster instances simultaneously:
+```
+for instance in bap-reader-1 bap-writer-1 bap-reader-3; do
+  echo "=== $instance ===" && \
+  aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
+    --dimensions Name=DBInstanceIdentifier,Value=$instance \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 300 --statistics Average Maximum --region <region> --output json 2>/dev/null \
+    | jq -r '.Datapoints | sort_by(.Timestamp) | .[] | "\(.Timestamp): avg=\(.Average | floor)%, max=\(.Maximum | floor)%"'
+done
+```
+(Use `bpp-writer-1 bpp-reader-1` for driver alerts.)
+
+The instance with the highest CPU is the actual affected instance — use that for all subsequent steps.
 
 ---
 
@@ -97,32 +130,39 @@ aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
 
 ## Step 4: Check Business Impact (Run in Parallel)
 
-After identifying the DB issue, immediately check if it's affecting users. Run all of these simultaneously:
+After identifying the DB issue, immediately check if it's affecting users. Run all of these simultaneously.
+
+**Use the `prometheus_query_range` tool for all PromQL queries below. Do NOT use http_get.**
 
 ### 4a. Ride-to-Search Ratio (are riders getting matched?)
-Query Prometheus for ride-to-search ratio drop:
-```
-rate(beckn_ride_created_total[5m]) / rate(beckn_search_request_total[5m])
-```
-Compare value at `startsAt` vs `startsAt - 30m`. A drop indicates DB issues are blocking ride allocation.
+Use `prometheus_query_range` tool with:
+- query: `rate(beckn_ride_created_total[5m]) / rate(beckn_search_request_total[5m])`
+- start: `<startsAt - 30m>`
+- end: `<startsAt + 1h>`
+- step: `5m`
+
+A drop at `startsAt` vs baseline indicates DB issues are blocking ride allocation.
 
 ### 4b. 5xx Error Rate (are APIs failing?)
-```
-sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
-```
-Or query VictoriaMetrics:
-```
-sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) by (ingress)
-```
+Use `prometheus_query_range` tool with:
+- query: `sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) by (ingress)`
+- start: `<startsAt - 10m>`
+- end: `<startsAt + 1h>`
+- step: `1m`
+
 Check if any service's 5xx rate spiked at the same time as the DB CPU spike.
 
 ### 4c. API Latency (are requests slowing down?)
-```
-histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
-```
-A p99 spike on `bap-app-backend` or `bpp-backend` at the same time = DB is in the critical path.
+Use `prometheus_query_range` tool with:
+- query: `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))`
+- start: `<startsAt - 10m>`
+- end: `<startsAt + 1h>`
+- step: `1m`
 
-### 4d. ALB 5xx errors (if Prometheus unavailable)
+A p99 spike on `bap-app-backend` or `bpp-backend` = DB is in the critical path.
+
+### 4d. ALB 5xx errors (fallback if prometheus_query_range returns no data)
+Use bash tool:
 ```
 aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
   --metric-name HTTPCode_Target_5XX_Count \

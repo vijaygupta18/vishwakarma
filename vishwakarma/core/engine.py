@@ -54,11 +54,15 @@ class InvestigationEngine:
         executor: ToolExecutor,
         max_steps: int = DEFAULT_MAX_STEPS,
         cluster_name: str = "",
+        all_toolsets: list | None = None,
+        knowledge: str = "",
     ):
         self.llm = llm
         self.executor = executor
         self.max_steps = max_steps
         self.cluster_name = cluster_name
+        self.all_toolsets = all_toolsets  # includes disabled ones — shown to LLM
+        self.knowledge = knowledge        # site-specific knowledge base (from /data/knowledge.md)
 
     def investigate(
         self,
@@ -101,8 +105,10 @@ class InvestigationEngine:
             toolsets=self.executor.toolsets,
             cluster_name=self.cluster_name,
             runbooks=runbooks,
+            knowledge=self.knowledge or None,
             extra_prompt=extra_system_prompt,
             sections_off=sections_off,
+            all_toolsets=self.all_toolsets,
         )
         messages = build_messages(
             question=question,
@@ -175,8 +181,8 @@ class InvestigationEngine:
                 params = tc["params"]
                 call_id = tc["id"]
 
-                # Loop guard
-                allowed, reason = guard.is_allowed(tool_name, params)
+                # Loop guard (pass tool_outputs for history-based check)
+                allowed, reason = guard.is_allowed(tool_name, params, all_tool_outputs)
                 if not allowed:
                     blocked[call_id] = reason
                     continue
@@ -232,6 +238,7 @@ class InvestigationEngine:
                 log.info(f"Running tool #{tool_idx} [bold]{tool_name}[/bold]: {desc}")
                 output = self.executor.execute(tool_name, params)
                 output.tool_call_id = call_id
+                output.params = params  # store for LoopGuard history check
                 if output.status == ToolStatus.ERROR:
                     content = f"Error: {output.error}\nCommand: {output.invocation}"
                 elif output.status == ToolStatus.NO_DATA:
@@ -319,13 +326,16 @@ class InvestigationEngine:
         guard = LoopGuard()
         compactions = 0
         tool_call_counter = 0
+        all_stream_tool_outputs: list[ToolOutput] = []
         decisions = {d.tool_call_id: d for d in (approval_decisions or [])}
 
         system = build_system_prompt(
             toolsets=self.executor.toolsets,
             cluster_name=self.cluster_name,
             runbooks=runbooks,
+            knowledge=self.knowledge or None,
             extra_prompt=extra_system_prompt,
+            all_toolsets=self.all_toolsets,
         )
         messages = build_messages(
             question=question,
@@ -383,7 +393,7 @@ class InvestigationEngine:
                     params = {}
                 call_id = tc["id"]
 
-                allowed, reason = guard.is_allowed(tool_name, params)
+                allowed, reason = guard.is_allowed(tool_name, params, all_stream_tool_outputs)
                 if not allowed:
                     stream_blocked[call_id] = reason
                     continue
@@ -401,6 +411,7 @@ class InvestigationEngine:
             def _run_stream_tool(call_id: str, tool_name: str, params: dict):
                 output = self.executor.execute(tool_name, params)
                 output.tool_call_id = call_id
+                output.params = params
                 if output.status == ToolStatus.ERROR:
                     content = f"Error: {output.error}\nCommand: {output.invocation}"
                 elif output.status == ToolStatus.NO_DATA:
@@ -427,6 +438,7 @@ class InvestigationEngine:
                     for future in as_completed(futures):
                         cid, tool_name, output, content = future.result()
                         stream_results[cid] = (tool_name, output, content)
+                        all_stream_tool_outputs.append(output)
                         yield {
                             "type": "tool_call_result",
                             "tool": tool_name,

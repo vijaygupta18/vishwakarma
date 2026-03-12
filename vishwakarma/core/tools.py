@@ -191,9 +191,14 @@ class ToolExecutor:
     def _rebuild_index(self):
         self._index = {}
         for ts in self.toolsets:
-            if not ts.enabled or ts.health == ToolsetHealth.FAILED:
+            if not ts.enabled:
                 continue
             for tool in ts.get_tools():
+                # Wire Python toolset's execute() as the handler if no handler/command set
+                if tool.handler is None and tool.command is None:
+                    _ts = ts  # capture for closure
+                    _tool_name = tool.name
+                    tool = tool.model_copy(update={"handler": lambda params, _t=_ts, _n=_tool_name: _t.execute(_n, params)})
                 self._index[tool.name] = tool
 
     def all_tool_defs(self) -> list[ToolDef]:

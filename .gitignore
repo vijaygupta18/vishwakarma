@@ -1,6 +1,8 @@
 k8s/deployment.yaml
 k8s/rbac.yaml
 PLAN.md
+deployment.md
+knowledge.md
 
 # Python
 __pycache__/

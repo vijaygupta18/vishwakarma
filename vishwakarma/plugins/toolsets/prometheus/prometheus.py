@@ -35,7 +35,9 @@ class PrometheusToolset(Toolset):
         self._session.headers.update(self.headers)
 
     def check_prerequisites(self) -> tuple[bool, str]:
+        import urllib.parse
         try:
+            # Try standard Prometheus health endpoint
             r = self._session.get(
                 f"{self.url}/-/healthy",
                 timeout=5,
@@ -43,8 +45,11 @@ class PrometheusToolset(Toolset):
             )
             if r.ok:
                 return True, ""
-            # VictoriaMetrics uses /health
-            r2 = self._session.get(f"{self.url}/health", timeout=5, auth=self._auth)
+            # VictoriaMetrics: health endpoint is at server root, not under the select path
+            # e.g. http://vmselect:8481/select/0/prometheus → health at http://vmselect:8481/health
+            parsed = urllib.parse.urlparse(self.url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            r2 = self._session.get(f"{base_url}/health", timeout=5, auth=self._auth)
             if r2.ok:
                 return True, ""
             return False, f"Prometheus health check failed: {r.status_code}"
