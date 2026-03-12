@@ -13,12 +13,9 @@
 - Always state the time window used in your findings (e.g. "investigated 17:00–18:00 UTC").
 
 ## Infrastructure Reference
-- **Redis clusters (replication groups):**
-  - `main-redis-cluster` — main app cache (sessions, ride state, KV store)
-  - `location-redis` — location tracking service (driver location data)
-  - `utils-redis-cluster` — utility services
-- **Elasticsearch app logs index:** `app-logs-YYYY-MM-DD` (e.g. `app-logs-2026-03-12`)
-- **Elasticsearch endpoint:** `https://<elasticsearch-endpoint>`
+Refer to the **Site Knowledge Base** for your cluster's specific values:
+- Redis cluster IDs (replication group names) and their roles
+- Elasticsearch endpoint + app log index name
 
 ## Workflow
 
@@ -77,14 +74,13 @@ If evictions > 0: Redis is full. Cache misses will increase, forcing more DB rea
 
 ### Step 4: Correlate with Application Pods
 Find all pods that use Redis across all namespaces:
-`kubectl get pods -A | grep -iE "beckn|atlas|drainer|producer|backend|alloc"`
+`kubectl get pods -A | grep -iE "<your-app-services>"` (use service names from the knowledge base)
 
-Grep their logs for Redis errors during the spike:
-`timeout 30 stern -n atlas bap-app-backend --since 1h | grep -iE "redis|cache|timeout|refused|clusterdown|moved|evict|conn" | head -200`
-`timeout 30 stern -n atlas bpp-backend --since 1h | grep -iE "redis|cache|timeout|refused|clusterdown|moved" | head -200`
+Grep their logs for Redis errors during the spike (use service names from the knowledge base):
+`timeout 30 stern -n <namespace> <service-name> --since 1h | grep -iE "redis|cache|timeout|refused|clusterdown|moved|evict|conn" | head -200`
 
 ### Step 5: Search Elasticsearch for Redis Errors
-Search `app-logs-<today's date>` index for Redis errors in the last hour:
+Search the app log index (see knowledge base for index name) for Redis errors in the last hour:
 ```json
 {
   "size": 20,
@@ -119,7 +115,7 @@ High `CurrConnections` or `NewConnections` spike:
 
 ### Step 7: Check for Expensive Commands
 If Redis CPU is high, look for `KEYS *`, `SMEMBERS` on large sets, `SORT`, `LRANGE` on large lists:
-`timeout 30 stern -n atlas bap-app-backend --since 1h | grep -iE "KEYS|SMEMBERS|LRANGE|SORT|SCAN" | head -50`
+`timeout 30 stern -n <namespace> <service-name> --since 1h | grep -iE "KEYS|SMEMBERS|LRANGE|SORT|SCAN" | head -50`
 
 ## Synthesize Findings
 

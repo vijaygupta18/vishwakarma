@@ -320,5 +320,21 @@ def _resolve_ns(t: str, now_ns: int) -> int:
         else:
             secs = float(parts)
         return int(now_ns - secs * 1e9)
-    # Assume already a numeric timestamp
-    return int(t)
+    # ISO 8601 format: 2026-03-12T12:40:00Z or 2026-03-12T12:40:00+00:00
+    if "T" in t or "-" in t[:10]:
+        from datetime import datetime, timezone
+        try:
+            if t.endswith("Z"):
+                t = t[:-1] + "+00:00"
+            dt = datetime.fromisoformat(t)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1e9)
+        except ValueError:
+            pass
+    # Assume already a numeric Unix timestamp (seconds or nanoseconds)
+    val = float(t)
+    # If value looks like seconds (< 1e13), convert to nanoseconds
+    if val < 1e13:
+        return int(val * 1e9)
+    return int(val)

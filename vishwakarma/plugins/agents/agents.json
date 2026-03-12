@@ -10,15 +10,15 @@
     {
       "id": "rds-investigation",
       "update_date": "2026-03-12",
-      "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. Covers instances: bap-reader-1, bap-writer-1, bap-reader-3, bpp-writer-1, bpp-reader-1, utils-db-instance, utils-db. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
-      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "atlas-customer", "atlas-driver", "memory", "db", "customer-r", "customer-w", "driver-r"],
+      "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
+      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "memory", "db"],
       "runbook": "../runbooks/aws/rds-investigation.md"
     },
     {
       "id": "redis-investigation",
       "update_date": "2026-03-12",
-      "description": "Investigate AWS ElastiCache Redis alerts: high CPU, high memory, key evictions, high connections, low cache hit ratio, replication lag. Covers clusters: main-redis-cluster, location-redis, utils-redis-cluster. For alerts: RedisHighCPU, RedisHighMemory, RedisEvictions, RedisHighConnections.",
-      "keywords": ["redis", "elasticache", "cache", "eviction", "beckn-redis", "location-redis", "utils-redis-cluster", "bandwidth", "networkbandwidth"],
+      "description": "Investigate AWS ElastiCache Redis alerts: high CPU, high memory, key evictions, high connections, low cache hit ratio, replication lag. For alerts: RedisHighCPU, RedisHighMemory, RedisEvictions, RedisHighConnections.",
+      "keywords": ["redis", "elasticache", "cache", "eviction", "bandwidth", "networkbandwidth"],
       "runbook": "../runbooks/aws/redis-investigation.md"
     },
     {

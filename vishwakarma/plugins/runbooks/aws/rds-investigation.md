@@ -14,10 +14,12 @@ Investigate AWS RDS CPU/connection/memory alerts. Find:
 - If `startsAt` not available, use `now - 30 minutes`.
 
 ## Infrastructure Reference
-- **Prometheus:** `http://<prometheus-url>`
-- **Elasticsearch app logs index:** `app-logs-YYYY-MM-DD`
-- **Elasticsearch endpoint:** `https://<elasticsearch-endpoint>`
-- **Known RDS instances:** `bap-reader-1`, `bap-writer-1`, `bap-reader-3`, `bpp-writer-1`, `bpp-reader-1`, `utils-db-instance`, `utils-db`
+Refer to the **Site Knowledge Base** for your cluster's specific values:
+- RDS instance identifiers + roles (writer/reader) per cluster
+- Alert name → instance mapping (alarm names often don't match instance IDs)
+- Elasticsearch endpoint + app log index name
+- Prometheus endpoint
+- Service → RDS mapping (which app connects to which DB)
 
 ---
 
@@ -36,7 +38,7 @@ If no alarm name in alert, check what recently fired (all states):
 aws cloudwatch describe-alarm-history --region <region> \
   --start-date <startsAt-30min ISO8601> --end-date <startsAt+2h ISO8601> \
   --history-item-type StateUpdate \
-  --query 'AlarmHistoryItems[?contains(HistorySummary, `RDS`) || contains(AlarmName, `rds`) || contains(AlarmName, `db`) || contains(AlarmName, `atlas`)].[AlarmName,Timestamp,HistorySummary]' \
+  --query 'AlarmHistoryItems[?contains(HistorySummary, `RDS`) -| contains(AlarmName, `rds`) -| contains(AlarmName, `db`)].[AlarmName,Timestamp,HistorySummary]' \
   --output table
 ```
 
@@ -47,15 +49,15 @@ aws rds describe-db-instances --region <region> \
 ```
 
 **IMPORTANT: Always check all instances in the same cluster in parallel, not just the one in the alarm name.**
-Alert names do not always map 1:1 to instance names (e.g. `atlas-customer-v1-r1` → `bap-reader-1`).
+Alert names do not always map 1:1 to instance names — use the alert→instance mapping from the knowledge base.
 The actual high CPU may be on a different instance in the same cluster.
 
-- If alarm mentions `customer` → check `bap-reader-1`, `bap-writer-1`, `bap-reader-3` all at once
-- If alarm mentions `driver` → check `bpp-writer-1`, `bpp-reader-1` all at once
+- Use the instance→cluster mapping from the knowledge base to identify all instances in the same cluster
+- Check ALL instances in the cluster simultaneously — the alerting instance may not be the one with highest CPU
 
-Run CPU check for all cluster instances simultaneously:
+Run CPU check for all instances in the cluster at once (use instance IDs from knowledge base):
 ```
-for instance in bap-reader-1 bap-writer-1 bap-reader-3; do
+for instance in <instance-1> <instance-2> <instance-3>; do
   echo "=== $instance ===" && \
   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
     --dimensions Name=DBInstanceIdentifier,Value=$instance \
@@ -64,7 +66,6 @@ for instance in bap-reader-1 bap-writer-1 bap-reader-3; do
     | jq -r '.Datapoints | sort_by(.Timestamp) | .[] | "\(.Timestamp): avg=\(.Average | floor)%, max=\(.Maximum | floor)%"'
 done
 ```
-(Use `bpp-writer-1 bpp-reader-1` for driver alerts.)
 
 The instance with the highest CPU is the actual affected instance — use that for all subsequent steps.
 
@@ -104,11 +105,20 @@ aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReadIOPS 
 
 ## Step 3: Find the Top Queries Using Performance Insights
 
-This is the most important step — identifies exactly which SQL is causing high CPU:
+**IMPORTANT:** The PI API requires the `DbiResourceId` (e.g., `db-ABCDEF123456`), NOT the DBInstanceIdentifier (`bap-reader-1`). Always fetch it first.
+
+**Step 3a — Get the DbiResourceId:**
+```
+aws rds describe-db-instances --db-instance-identifier <instance-id> --region <region> \
+  --query 'DBInstances[0].DbiResourceId' --output text
+```
+This returns something like `db-ABCDEF123456`. Use this value in the next command.
+
+**Step 3b — Query Performance Insights (most important step — identifies exactly which SQL is causing high CPU):**
 ```
 aws pi describe-dimension-keys \
   --service-type RDS \
-  --identifier db:<instance-id> \
+  --identifier <DbiResourceId-from-step-3a> \
   --start-time <startsAt-10min ISO8601> \
   --end-time <startsAt+1h ISO8601> \
   --metric db.load.avg \
@@ -136,7 +146,7 @@ After identifying the DB issue, immediately check if it's affecting users. Run a
 
 ### 4a. Ride-to-Search Ratio (are riders getting matched?)
 Use `prometheus_query_range` tool with:
-- query: `rate(beckn_ride_created_total[5m]) / rate(beckn_search_request_total[5m])`
+- query: use your ride-created and search-request counter metrics from the knowledge base (e.g. `rate(<ride_created_metric>[5m]) / rate(<search_request_metric>[5m])`)
 - start: `<startsAt - 30m>`
 - end: `<startsAt + 1h>`
 - step: `5m`
@@ -159,7 +169,7 @@ Use `prometheus_query_range` tool with:
 - end: `<startsAt + 1h>`
 - step: `1m`
 
-A p99 spike on `bap-app-backend` or `bpp-backend` = DB is in the critical path.
+A p99 spike on the services that connect to this DB (see knowledge base) = DB is in the critical path.
 
 ### 4d. ALB 5xx errors (fallback if prometheus_query_range returns no data)
 Use bash tool:
@@ -174,13 +184,12 @@ aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
 
 ## Step 5: Correlate — Which Service is Hitting This DB?
 
-Check application pods that connect to this DB:
+Check application pods that connect to this DB (use service names from the knowledge base):
 ```
-timeout 30 stern -n atlas bap-app-backend --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
-timeout 30 stern -n atlas bpp-backend --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
+timeout 30 stern -n <namespace> <service-name> --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
 ```
 
-Search Elasticsearch for DB errors in `app-logs-<YYYY-MM-DD>`:
+Search Elasticsearch for DB errors in the app log index (see knowledge base for index name):
 ```json
 {
   "size": 20,

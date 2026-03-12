@@ -1,8 +1,8 @@
-# SRE Platform System Alerts Investigation Runbook
+# System Alerts Investigation Runbook
 
 ## Goal
-- **Primary Objective:** Investigate alerts tagged `ny-system-alerts` — covers drainer lag, login success rate drops, producer failures, system config parse failures, Multimodal 5xx errors, and Trinetra-monitored system failures.
-- **Scope:** SRE Platform backend services on EKS — `atlas` namespace. Services: bap-app-backend, bpp-backend, drainer pods, driver-job-producer.
+- **Primary Objective:** Investigate system alerts — drainer lag, login success rate drops, producer failures, system config parse failures, and service-level 5xx errors.
+- **Scope:** Backend services on EKS. Services: BAP app backend, BPP driver backend, drainer pods, job producer.
 - **Expected Outcome:** Identify which service failed, why it failed, and what the likely root cause is.
 
 ## Time Window Instructions
@@ -13,12 +13,11 @@
 - Always state the time window used in your findings.
 
 ## Infrastructure Reference
-- **RDS instances:**
-  - Customer/BAP: `bap-reader-1` (read), `bap-writer-1` (write), `bap-reader-3` (read)
-  - Driver/BPP: `bpp-writer-1` (write), `bpp-reader-1` (read)
-- **Redis clusters:** `main-redis-cluster` (main), `location-redis` (location tracking), `utils-redis-cluster`
-- **Elasticsearch app logs:** `app-logs-YYYY-MM-DD` — `message` field contains JSON with actual log text in `log` key
-- **Elasticsearch endpoint:** `https://<elasticsearch-endpoint>`
+Refer to the **Site Knowledge Base** for your cluster's specific values:
+- Service namespaces and pod name patterns
+- RDS instance identifiers (BAP/BPP, reader/writer)
+- Redis cluster IDs
+- Elasticsearch endpoint + app log index name
 
 ## Alert Types and Investigation Steps
 
@@ -33,13 +32,13 @@
    to get the success ratio.
 
 2. Find the actual auth service pods across all namespaces:
-   `kubectl get pods -A | grep -i "beckn-app\|auth"`
+   `kubectl get pods -A | grep -i "app-backend\|auth"`
    Note the namespace, pod names, STATUS, and RESTARTS.
 
 3. Grep logs across all auth service pods using stern (with head limit to avoid hanging):
-   `timeout 30 stern -n atlas bap-app-backend --since 30m | grep -iE "auth|verify|error|exception|redis|db|timeout|refused" | head -200`
+   `timeout 30 stern -n <namespace> <app-backend-service> --since 30m | grep -iE "auth|verify|error|exception|redis|db|timeout|refused" | head -200`
 
-5. Search Elasticsearch `app-logs-<today's date>` for 5xx responses on the auth endpoint in the last 30 minutes:
+5. Search the app log index (from knowledge base) for errors on the auth endpoint in the last 30 minutes:
 ```json
 {
   "size": 20,
@@ -65,27 +64,27 @@
    If found → immediately run RDS pivot steps (see Synthesize section below).
 
 8. Check recent deployments:
-   `kubectl get events -n atlas --sort-by='.lastTimestamp' | grep -iE "pulled|deploy|image" | tail -10`
+   `kubectl get events -n <namespace> --sort-by='.lastTimestamp' | grep -iE "pulled|deploy|image" | tail -10`
 
 **Possible root causes:** DB connectivity issue, Redis down, OTP provider outage, bad deployment, pod crash loop.
 
 ---
 
 ### Alert: ProducerNotProducing
-**Trigger:** `driver-job-producer-service-production` not producing jobs for 10 minutes.
+**Trigger:** Job producer service not producing jobs for 10 minutes.
 
 1. Find the actual producer pod name:
    `kubectl get pods -A | grep -i producer`
    Note namespace, pod name, STATUS, RESTARTS.
 
 2. Grep producer logs for errors:
-   `timeout 30 stern -n atlas <producer-name-from-grep> --since 30m | grep -iE "error|exception|kafka|connect|timeout|panic|stop|fail" | head -200`
+   `timeout 30 stern -n <namespace> <producer-name-from-grep> --since 30m | grep -iE "error|exception|kafka|connect|timeout|panic|stop|fail" | head -200`
 
 4. Check Prometheus metric to confirm silence:
    `sum(increase(producer_operation_duration_sum{operation="producer"}[10m]))`
 
 5. Check pod events:
-   `kubectl describe pod -n atlas <pod-name> | tail -20`
+   `kubectl describe pod -n <namespace> <pod-name> | tail -20`
 
 **Possible root causes:** Pod crash loop, Kafka/messaging connectivity issue, OOM, bad config after deployment.
 
@@ -99,13 +98,13 @@
    Note namespace, pod names, STATUS, RESTARTS.
 
 2. Grep drainer logs across all drainer pods:
-   `timeout 30 stern -n atlas <drainer-name-from-grep> --since 30m | grep -iE "error|exception|db|connect|timeout|panic|stop|fail" | head -200`
+   `timeout 30 stern -n <namespace> <drainer-name-from-grep> --since 30m | grep -iE "error|exception|db|connect|timeout|panic|stop|fail" | head -200`
 
 4. Confirm metric in VictoriaMetrics:
    `driver_drainer_stop_status` and `drainer_stop_status`
 
 5. Check pod events for OOMKilled or crash details:
-   `kubectl describe pod -n atlas <pod-name-from-step-1> | grep -A5 "Last State\|OOMKilled\|Reason\|Events"`
+   `kubectl describe pod -n <namespace> <pod-name-from-step-1> | grep -A5 "Last State\|OOMKilled\|Reason\|Events"`
 
 6. If DB errors found in logs → run RDS pivot (see Synthesize section).
 
@@ -130,7 +129,7 @@
 ---
 
 ### Alert: DriverDrainerLagIncreasing / CustomerDrainerLagIncreasing
-**Trigger:** Drainer processing lag exceeds 1 hour (driver) or 2 hours (customer).
+**Trigger:** Drainer processing lag exceeds threshold.
 
 1. Confirm lag in VictoriaMetrics:
    - Driver: `(sum(increase(driver_query_drain_latency_sum[5m])) / sum(increase(driver_query_drain_latency_count[5m]))) / (1000*60*60)`
@@ -140,18 +139,25 @@
    `kubectl get pods -A | grep -i drainer`
 
 3. Grep drainer logs for slow processing or DB errors:
-   `timeout 30 stern -n atlas <drainer-name> --since 30m | grep -iE "slow|lag|db|timeout|error|exception" | head -200`
+   `timeout 30 stern -n <namespace> <drainer-name> --since 30m | grep -iE "slow|lag|db|timeout|error|exception" | head -200`
 
-4. Check RDS connections and CPU (lag usually means DB is the bottleneck):
+4. Check RDS connections and CPU — use the RDS instance IDs from the knowledge base (lag usually means DB is the bottleneck):
    ```
-   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=bap-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=bap-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=bpp-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=bpp-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
+   for instance in <writer-instance-1> <writer-instance-2>; do
+     echo "=== $instance ===" && \
+     aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
+       --dimensions Name=DBInstanceIdentifier,Value=$instance \
+       --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+       --period 60 --statistics Average Maximum --region <region>
+     aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections \
+       --dimensions Name=DBInstanceIdentifier,Value=$instance \
+       --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+       --period 60 --statistics Maximum --region <region>
+   done
    ```
 
 5. Check if drainer pod count dropped (HPA scale-down):
-   `kubectl get hpa -n atlas | grep -i drainer`
+   `kubectl get hpa -n <namespace> | grep -i drainer`
 
 **Possible root causes:** DB overloaded, drainer pods reduced, traffic spike, slow query from recent deployment.
 
@@ -167,7 +173,7 @@
    `kubectl get pods -A | grep -i <service-name-from-step-1>`
 
 3. Grep logs for config errors:
-   `timeout 30 stern -n atlas <service-name> --since 15m | grep -iE "config|parse|failed|error|invalid|syntax" | head -200`
+   `timeout 30 stern -n <namespace> <service-name> --since 15m | grep -iE "config|parse|failed|error|invalid|syntax" | head -200`
 
 5. Check recent ConfigMap/Secret changes:
    `kubectl get events -A --sort-by='.lastTimestamp' | grep -iE "configmap|secret|updated" | tail -10`
@@ -186,7 +192,7 @@
    `kubectl get pods -A | grep -i <job-name-from-step-1>`
 
 3. Grep pod logs for failure reason:
-   `timeout 30 stern -n atlas <pod-name> --since 30m | grep -iE "error|exception|fail|panic|timeout" | head -200`
+   `timeout 30 stern -n <namespace> <pod-name> --since 30m | grep -iE "error|exception|fail|panic|timeout" | head -200`
 
 5. Check job history:
    `kubectl get jobs -A | grep -i <job-name>`
@@ -205,9 +211,9 @@
    `kubectl get pods -A | grep -i <service-name-from-step-1>`
 
 3. Grep logs for multimodal errors:
-   `timeout 30 stern -n atlas <service-name> --since 30m | grep -iE "multimodal|error|exception|timeout|5[0-9]{2}" | head -200`
+   `timeout 30 stern -n <namespace> <service-name> --since 30m | grep -iE "multimodal|error|exception|timeout|5[0-9]{2}" | head -200`
 
-4. Search Elasticsearch `app-logs-<today's date>` for 5xx responses on multimodal handlers in the last 30 minutes:
+4. Search the app log index (from knowledge base) for 5xx responses on multimodal handlers in the last 30 minutes:
 ```json
 {
   "size": 20,
@@ -241,32 +247,50 @@
 ## Synthesize Findings
 
 ### If logs show Redis errors (timeout, connection refused, CLUSTERDOWN, MOVED)
-Redis is the root cause. Immediately run for all 3 clusters:
+Redis is the root cause. Immediately run for all clusters (use cluster IDs from knowledge base):
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=main-redis-cluster --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=main-redis-cluster --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=main-redis-cluster --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections --dimensions Name=ReplicationGroupId,Value=main-redis-cluster --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=location-redis --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=location-redis --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=location-redis --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
+for cluster in <cluster-id-1> <cluster-id-2> <cluster-id-3>; do
+  echo "=== $cluster ===" && \
+  aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization \
+    --dimensions Name=ReplicationGroupId,Value=$cluster \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Average Maximum --region <region>
+  aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage \
+    --dimensions Name=ReplicationGroupId,Value=$cluster \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Average --region <region>
+  aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions \
+    --dimensions Name=ReplicationGroupId,Value=$cluster \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Sum --region <region>
+  aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections \
+    --dimensions Name=ReplicationGroupId,Value=$cluster \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Maximum --region <region>
+done
 ```
 Report: cluster name, CPU%, memory%, eviction count, connection count, and when it correlated with the alert.
 
 ### If logs show DB errors (connection refused, too many connections, query timeout, deadlock)
-RDS is the root cause. Immediately run for customer (BAP) instances:
+RDS is the root cause. Use the service→RDS mapping from the knowledge base. Immediately run for all relevant instances:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=bap-reader-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=bap-reader-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=bap-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=bap-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-aws pi describe-dimension-keys --service-type RDS --identifier db:bap-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
+for instance in <bap-reader> <bap-writer> <bpp-writer> <bpp-reader>; do
+  echo "=== $instance ===" && \
+  aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
+    --dimensions Name=DBInstanceIdentifier,Value=$instance \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Average Maximum --region <region>
+  aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections \
+    --dimensions Name=DBInstanceIdentifier,Value=$instance \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Maximum --region <region>
+done
 ```
-For driver (BPP) instances:
+For writer instances, also run Performance Insights:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=bpp-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=bpp-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-aws pi describe-dimension-keys --service-type RDS --identifier db:bpp-writer-1 --start-time <30min ago ISO8601> --end-time <now ISO8601> --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
+aws pi describe-dimension-keys --service-type RDS --identifier db:<writer-instance-dbi-resource-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
 ```
 Report: RDS CPU%, connection count, top queries.
 
