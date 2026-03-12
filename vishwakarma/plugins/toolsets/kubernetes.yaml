@@ -7,11 +7,11 @@ prerequisites:
 
 tools:
   - name: kubectl_get_pods
-    description: "List pods in a namespace (or all namespaces). Use label selectors to filter."
+    description: "List pods. args MUST be a string like '-n atlas' or '--all-namespaces'. Never pass a boolean."
     command: "kubectl get pods {args}"
     params:
       - name: args
-        description: "kubectl args e.g. '-n payments -l app=rider-app -o wide'"
+        description: "String kubectl args. Examples: '-n atlas -o wide', '-n monitoring -l app=rider-app', '--all-namespaces'. MUST be a string, never a boolean."
         type: string
         required: true
 

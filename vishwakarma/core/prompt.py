@@ -41,7 +41,15 @@ Always:
 INVESTIGATION_PHASES = """\
 ## Investigation Protocol
 
-You investigate in 3 structured phases. Do not skip phases or merge them.
+**MANDATORY FIRST ACTION:** Before anything else, call `todo_write` with your full investigation plan.
+List every step you intend to take with status `pending`. Update it to `in_progress` when starting
+a step, `completed` when done. This shows operators exactly what you are doing and how much is left.
+
+**RUNBOOK TAKES PRECEDENCE:** If a runbook is provided below, follow the runbook's steps in order as
+your investigation plan. The runbook is purpose-built for this alert type. Do NOT default to generic
+Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or other sources.
+
+If no runbook is provided, investigate in 3 structured phases:
 
 ### PHASE 1 — RECON (run tools in parallel, broad signals)
 Gather wide signals simultaneously. Fire multiple tool calls in one response:
@@ -84,9 +92,9 @@ YES / NO — <if YES, what specifically needs checking>
 """
 
 WHAT_CHANGED = """\
-## Mandatory First Step: What Changed?
+## Detecting What Changed (for K8s/app alerts without a runbook)
 
-For EVERY alert, before anything else, run these simultaneously:
+If investigating a Kubernetes or application alert without a runbook, run these simultaneously:
 1. `kubectl rollout history <service> -n <namespace>` — detect recent deploys
 2. `kubectl get events -n <namespace> --sort-by=.lastTimestamp | tail -30` — detect K8s-level changes
 3. Prometheus: compare error rate at `alert_start_time - 1h` vs `alert_start_time` — sudden spike = deploy/change, gradual = leak/exhaustion
@@ -95,6 +103,8 @@ Pattern:
 - **Sudden spike** at a specific time → look for deploy, config change, or traffic surge at that exact time
 - **Gradual increase** over hours → memory leak, connection pool exhaustion, disk fill, slow query accumulation
 - **Step function** (stable → new stable level) → quota hit, rate limit, downstream degradation
+
+**For AWS alerts (RDS, ElastiCache, ALB, etc.):** Skip this section. Follow the runbook which starts with AWS CLI commands, not Kubernetes.
 """
 
 GENERAL_GUIDELINES = """\

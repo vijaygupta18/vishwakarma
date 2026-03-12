@@ -1,104 +1,161 @@
 # RDS Investigation Runbook
 
 ## Goal
-- **Primary Objective:** Investigate AWS RDS alerts — high CPU, high connections, low memory, high IOPS, storage issues, or replication lag.
-- **Scope:** AWS RDS (PostgreSQL) instances for SRE Platform in <region>.
-- **Agent Mandate:** Read-only. Do not modify any DB settings. Provide RCA with root cause and recommended fixes for the team.
-- **Expected Outcome:** Identify which instance is affected, what caused the alert, which service/query is responsible, and what the team should do.
+Investigate AWS RDS CPU/connection/memory alerts. Find:
+1. Which instance is affected and what metric is high
+2. Which query or operation is causing it (top SQL from Performance Insights)
+3. Whether there is business impact (5xx errors, ride-to-search ratio drop)
 
-## Time Window Instructions
-- The alert's `startsAt` field contains the **exact time the alarm fired** — use this as your investigation window start.
-- For all CloudWatch and Elasticsearch queries use: `start-time = startsAt - 10 minutes`, `end-time = startsAt + 1 hour`
-- If `startsAt` is not available, fall back to `now - 30 minutes`.
-- Always state the time window used in your findings (e.g. "investigated 17:00–18:00 UTC").
+**Agent Mandate:** Read-only. Do not modify any DB settings.
+
+## Time Window
+- Use `startsAt` from the alert as your investigation anchor.
+- Query window: `startsAt - 10 minutes` to `startsAt + 1 hour`
+- If `startsAt` not available, use `now - 30 minutes`.
 
 ## Infrastructure Reference
-- **Elasticsearch app logs index:** `app-logs-YYYY-MM-DD` (e.g. `app-logs-2026-03-12`)
+- **Prometheus:** `http://<prometheus-url>`
+- **Elasticsearch app logs index:** `app-logs-YYYY-MM-DD`
 - **Elasticsearch endpoint:** `https://<elasticsearch-endpoint>`
-- **App log format (in message field):** `TIMESTAMP LEVEL> @pod-name [requestId-UUID, sessionId-UUID, component] |> error message`
+- **Known RDS instances:** `bap-reader-1`, `bap-writer-1`, `bap-reader-3`, `bpp-writer-1`, `bpp-reader-1`, `utils-db-instance`, `utils-db`
 
-## Workflow
+---
 
-### Step 1: List All RDS Instances and Find the Alerting One
-First, get all RDS instances in the account:
-```
-aws rds describe-db-instances --region <region> --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceClass,DBInstanceStatus,MultiAZ]' --output table
-```
+## Step 1: Identify the Affected Instance and Metric
 
-If the alarm name contains an instance identifier, match it from the list above.
-If unclear, also describe alarms to find the exact instance:
+Match the alarm name to a known instance. If unclear, list all alarms in ALARM state:
 ```
-aws cloudwatch describe-alarms --state-value ALARM --region <region> --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason]' --output table
+aws cloudwatch describe-alarms --state-value ALARM --region <region> \
+  --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason,StateUpdatedTimestamp]' --output table
 ```
 
-Note all instance identifiers from Step 1 — you will check CPU on ALL of them in Step 2.
-
-### Step 2: Check CPU on ALL Instances (Find Which One is High)
-For **each instance** returned in Step 1, run:
+Then list all RDS instances to confirm the exact identifier:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=<instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average Maximum --region <region>
+aws rds describe-db-instances --region <region> \
+  --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceClass,DBInstanceStatus,MultiAZ]' --output table
 ```
 
-Run this for every instance. Identify which instances have high CPU (> 70% average or > 90% maximum). Focus the rest of the investigation on those.
+---
 
-### Step 3: Check All Key Metrics on the High-CPU Instance(s)
-For each high-CPU instance found in Step 2:
-```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeableMemory --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReadIOPS --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteIOPS --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DiskQueueDepth --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReplicaLag --dimensions Name=DBInstanceIdentifier,Value=<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average Maximum --region <region>
-```
+## Step 2: Check the Alerting Metric + Related Metrics (Run in Parallel)
 
-Interpret:
-- `DatabaseConnections` — connection count trend (surge = pool exhaustion or new deployment)
-- `FreeableMemory` — low = buffer pool pressure
-- `WriteIOPS` spike — bulk insert/update or autovacuum
-- `DiskQueueDepth` > 1 sustained — disk saturated
-- `ReplicaLag` — replication falling behind primary
-
-### Step 4: Check Performance Insights for Top Queries
-For the high-CPU instance (use the writer instance if it's a cluster):
+For the identified instance, run all of these simultaneously:
 ```
-aws pi describe-dimension-keys --service-type RDS --identifier db:<high-cpu-instance-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --metric db.load.avg --group-by '{"Group":"db.sql","Limit":10}' --region <region>
-```
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Average Maximum --region <region>
 
-Look for: full table scans, missing indexes, long-running transactions, N+1 query patterns.
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Maximum --region <region>
 
-### Step 5: Check RDS Slow Query Logs
-```
-aws rds describe-db-log-files --db-instance-identifier <high-cpu-instance-id> --region <region>
-aws rds download-db-log-file-portion --db-instance-identifier <high-cpu-instance-id> --log-file-name <most-recent-log-file> --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeableMemory \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Average --region <region>
+
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteIOPS \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Average --region <region>
+
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReadIOPS \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Average --region <region>
 ```
 
-Look for: queries exceeding `long_query_time`, lock wait timeouts, connection errors.
+---
 
-### Step 6: Correlate with Application Pods
-Find all pods connecting to RDS across all namespaces:
-`kubectl get pods -A | grep -iE "beckn|atlas|drainer|producer|backend"`
+## Step 3: Find the Top Queries Using Performance Insights
 
-Grep logs for DB errors from the high-CPU instance's service window:
-`timeout 30 stern -n atlas bap-app-backend --since 1h | grep -iE "db|connection|timeout|refused|too many|deadlock|query" | head -200`
-`timeout 30 stern -n atlas bpp-backend --since 1h | grep -iE "db|connection|timeout|refused|too many|deadlock|query" | head -200`
+This is the most important step — identifies exactly which SQL is causing high CPU:
+```
+aws pi describe-dimension-keys \
+  --service-type RDS \
+  --identifier db:<instance-id> \
+  --start-time <startsAt-10min ISO8601> \
+  --end-time <startsAt+1h ISO8601> \
+  --metric db.load.avg \
+  --group-by '{"Group":"db.sql","Limit":10}' \
+  --region <region>
+```
 
-### Step 7: Search Elasticsearch for DB Errors
-Search `app-logs-<today's date>` for DB errors in the last hour:
+Look for: full table scans (`Seq Scan`), missing indexes, long-running transactions, N+1 patterns.
+Note the top query fingerprint and which application service is likely running it.
+
+If Performance Insights returns no data, check slow query logs:
+```
+aws rds describe-db-log-files --db-instance-identifier <instance-id> --region <region>
+aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
+  --log-file-name <most-recent-slow-query-log> --region <region>
+```
+
+---
+
+## Step 4: Check Business Impact (Run in Parallel)
+
+After identifying the DB issue, immediately check if it's affecting users. Run all of these simultaneously:
+
+### 4a. Ride-to-Search Ratio (are riders getting matched?)
+Query Prometheus for ride-to-search ratio drop:
+```
+rate(beckn_ride_created_total[5m]) / rate(beckn_search_request_total[5m])
+```
+Compare value at `startsAt` vs `startsAt - 30m`. A drop indicates DB issues are blocking ride allocation.
+
+### 4b. 5xx Error Rate (are APIs failing?)
+```
+sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+```
+Or query VictoriaMetrics:
+```
+sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) by (ingress)
+```
+Check if any service's 5xx rate spiked at the same time as the DB CPU spike.
+
+### 4c. API Latency (are requests slowing down?)
+```
+histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))
+```
+A p99 spike on `bap-app-backend` or `bpp-backend` at the same time = DB is in the critical path.
+
+### 4d. ALB 5xx errors (if Prometheus unavailable)
+```
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
+  --metric-name HTTPCode_Target_5XX_Count \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --period 300 --statistics Sum --region <region>
+```
+
+---
+
+## Step 5: Correlate — Which Service is Hitting This DB?
+
+Check application pods that connect to this DB:
+```
+timeout 30 stern -n atlas bap-app-backend --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
+timeout 30 stern -n atlas bpp-backend --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
+```
+
+Search Elasticsearch for DB errors in `app-logs-<YYYY-MM-DD>`:
 ```json
 {
   "size": 20,
+  "sort": [{"@timestamp": "desc"}],
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-1h"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min>", "lte": "<startsAt+1h>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "connection refused"}},
             {"match": {"message": "too many connections"}},
             {"match": {"message": "deadlock"}},
             {"match": {"message": "query timeout"}},
-            {"match": {"message": "ERROR"}}
+            {"match": {"message": "connection pool"}}
           ],
           "minimum_should_match": 1
         }}
@@ -108,26 +165,26 @@ Search `app-logs-<today's date>` for DB errors in the last hour:
   "_source": ["message", "@timestamp"]
 }
 ```
-Look inside `message` field (JSON) → `log` key for the actual error. Match error timestamps to the CPU spike window from Step 2.
 
-### Step 8: Check for Batch Jobs or Migrations
-`kubectl get jobs -A --sort-by='.metadata.creationTimestamp' | tail -20`
-`kubectl get cronjobs -A`
+---
 
-Look for data pipeline jobs, report generation, or schema migrations running during the spike.
+## Synthesis
 
-## Synthesize Findings
+| Pattern | Root Cause |
+|---------|------------|
+| High CPU + Performance Insights shows seq scan | Missing index on a hot table |
+| High CPU + connection surge coincides with deploy | New code introduced expensive query or connection leak |
+| High CPU + high WriteIOPS | Bulk insert/update or autovacuum running |
+| High connections + DB errors in app logs | PgBouncer pool exhaustion |
+| Replication lag + high WriteIOPS | Heavy write load on primary |
+| DB CPU high but no 5xx / no ratio drop | Background job or analytics query — lower urgency |
+| DB CPU high + 5xx spike + ratio drop | Critical — DB is blocking ride matching / user requests |
 
-- **CPU spike + top query doing seq scan** → Missing index. Report: table name, query, which service runs it.
-- **CPU spike + connection surge + deployment** → New code introduced expensive query or connection leak. Report: service, deployment time.
-- **CPU spike + high WriteIOPS** → Bulk insert/update or autovacuum. Report: which job or service is writing.
-- **High connections + DB errors in app logs** → Connection pool exhaustion. Report: which service, connection count.
-- **Replication lag + WriteIOPS spike** → Heavy write load on primary. Report: write source.
-- **Low FreeableMemory + high ReadIOPS** → Buffer pool pressure, data not fitting in memory.
+## Output Required
 
-## Possible Fixes (for team to action)
-- Add index on the column identified from slow query / seq scan
-- Optimize the top CPU-consuming query
-- Review PgBouncer connection pool sizing for the connecting service
-- Scale up instance class if workload has genuinely grown
-- Tune autovacuum settings if autovacuum is the cause
+State clearly:
+1. **Affected instance:** `<instance-id>` with `<metric>` at `<peak value>` at `<timestamp>`
+2. **Top query:** `<SQL fingerprint>` — likely from service `<service-name>`
+3. **Business impact:** ride-to-search ratio `<before>` → `<after>`, 5xx rate `<before>` → `<after>`
+4. **Root cause:** one sentence
+5. **Recommended fix:** exact action (add index on X, scale instance, fix query in service Y)

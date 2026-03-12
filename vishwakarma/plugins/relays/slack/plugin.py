@@ -1,11 +1,10 @@
 """
 Slack destination — post investigation results to a Slack channel.
 
-Features:
-  - Markdown-formatted investigation summary
-  - Attaches PDF report if available
-  - Thread replies for follow-up actions
-  - Alert deduplication via thread_ts tracking
+Flow (matches Holmes):
+  1. Post main message to channel → capture thread ts
+  2. Upload PDF with files_upload_v2 (no channel needed)
+  3. Post PDF permalink as thread reply using thread_ts
 """
 import logging
 import os
@@ -15,14 +14,6 @@ log = logging.getLogger(__name__)
 
 
 class SlackDestination:
-    """
-    Post investigation results to Slack via Web API.
-
-    Config:
-      token: xoxb-...
-      channel: '#sre-alerts'
-      mention_on_critical: '@sre-oncall'
-    """
 
     def __init__(self, config: dict):
         self._token = config.get("token") or os.environ.get("SLACK_BOT_TOKEN", "")
@@ -47,69 +38,69 @@ class SlackDestination:
         thread_ts: str | None = None,
         pdf_path: str | None = None,
     ) -> dict:
-        """
-        Post investigation result to Slack.
-        Returns the Slack API response (includes ts for threading).
-        """
         channel = channel or self._channel
         client = self._get_client()
-
-        # Build blocks
         header_emoji = _severity_emoji(severity)
-        blocks = [
+
+        # Build main message blocks
+        blocks: list[dict] = [
             {
                 "type": "header",
                 "text": {"type": "plain_text", "text": f"{header_emoji} {title[:150]}"},
             },
         ]
-
         if source:
             blocks.append({
                 "type": "context",
                 "elements": [{"type": "mrkdwn", "text": f"Source: *{source}*"}],
             })
+        for chunk in _split_text(analysis, 2900):
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
 
-        # Split analysis into sections (Slack has 3000 char limit per block)
-        chunks = _split_text(analysis, 2900)
-        for chunk in chunks:
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": chunk},
-            })
-
-        # Mention on critical
         text = f"{header_emoji} {title}"
         if severity in ("critical", "high") and self._mention:
             text = f"{self._mention} {text}"
 
-        kwargs: dict[str, Any] = {
-            "channel": channel,
-            "text": text,
-            "blocks": blocks,
-        }
+        kwargs: dict[str, Any] = {"channel": channel, "text": text, "blocks": blocks}
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
 
         try:
             response = client.chat_postMessage(**kwargs)
-
-            # Upload PDF if provided
-            if pdf_path and os.path.exists(pdf_path):
-                try:
-                    client.files_upload_v2(
-                        channel=channel,
-                        file=pdf_path,
-                        filename=f"rca_{title[:40].replace(' ', '_')}.pdf",
-                        title=f"RCA Report: {title[:80]}",
-                        thread_ts=response["ts"],
-                    )
-                except Exception as e:
-                    log.warning(f"PDF upload failed: {e}")
-
-            return {"ts": response["ts"], "channel": response["channel"]}
+            msg_ts = response["ts"]
         except Exception as e:
             log.error(f"Slack post failed: {e}")
             return {}
+
+        # Upload PDF and reply in thread (Holmes pattern: upload first, then post permalink)
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                filename = f"rca_{title[:40].replace(' ', '_')}.pdf"
+                file_resp = client.files_upload_v2(
+                    content=open(pdf_path, "rb").read(),
+                    filename=filename,
+                    title=f"RCA Report: {title[:80]}",
+                )
+                if file_resp and "file" in file_resp:
+                    permalink = file_resp["file"]["permalink"]
+                    client.chat_postMessage(
+                        channel=channel,
+                        thread_ts=msg_ts,
+                        text=f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
+                        blocks=[
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
+                                },
+                            }
+                        ],
+                    )
+            except Exception as e:
+                log.warning(f"PDF upload failed: {e}")
+
+        return {"ts": msg_ts, "channel": response["channel"]}
 
     def post_error(self, title: str, error: str, channel: str | None = None) -> dict:
         channel = channel or self._channel
@@ -143,7 +134,6 @@ def _split_text(text: str, max_len: int) -> list[str]:
         if len(text) <= max_len:
             chunks.append(text)
             break
-        # Try to split on newline
         split_at = text.rfind("\n", 0, max_len)
         if split_at == -1:
             split_at = max_len

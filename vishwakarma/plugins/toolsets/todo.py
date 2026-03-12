@@ -1,12 +1,11 @@
 """
-Built-in TodoWrite/TodoRead toolset — lets the LLM track investigation steps.
+Built-in TodoWrite toolset — lets the LLM track investigation steps.
 
 Always active (no config required). The LLM calls todo_write to maintain
-a task list that is displayed in logs and visible to operators watching
-stern/kubectl logs.
+a task list displayed in logs so operators watching stern/kubectl logs
+can see what the agent is doing, how much is done, and what's remaining.
 """
 import logging
-from typing import Any
 
 from vishwakarma.core.models import ToolOutput, ToolStatus
 from vishwakarma.core.tools import Toolset, ToolDef
@@ -28,14 +27,12 @@ STATUS_ICONS = {
 
 
 def _render_task_table(tasks: list[dict]) -> str:
-    """Render tasks as an ASCII table for log output."""
     if not tasks:
         return "(empty task list)"
 
     col_id = max(2, max(len(str(t.get("id", ""))) for t in tasks))
-    col_content = max(7, max(len(str(t.get("content", ""))) for t in tasks))
-    col_content = min(col_content, 80)
-    col_status = max(6, max(len(str(t.get("status", ""))) for t in tasks) + 4)
+    col_content = min(80, max(7, max(len(str(t.get("content", ""))) for t in tasks)))
+    col_status = max(15, max(len(str(t.get("status", ""))) + 4 for t in tasks))
 
     sep = f"+{'-' * (col_id + 2)}+{'-' * (col_content + 2)}+{'-' * (col_status + 2)}+"
     header = f"| {'ID':<{col_id}} | {'Content':<{col_content}} | {'Status':<{col_status}} |"
@@ -58,10 +55,7 @@ def _render_task_table(tasks: list[dict]) -> str:
 @register_toolset
 class TodoToolset(Toolset):
     name = "todo"
-    description = "Built-in task list management for investigation tracking"
-
-    def __init__(self, config: dict):
-        self._config = config
+    description = "Track investigation progress — call todo_write at the start and after each step"
 
     def check_prerequisites(self) -> tuple[bool, str]:
         return True, ""
@@ -72,7 +66,8 @@ class TodoToolset(Toolset):
                 name="todo_write",
                 description=(
                     "Create or update your investigation task list. "
-                    "Call this at the start of an investigation and after completing each step. "
+                    "MUST be called at the very start of every investigation to show the plan. "
+                    "Update after each completed step to show progress. "
                     "Use statuses: pending, in_progress, completed, failed."
                 ),
                 parameters={
@@ -84,12 +79,11 @@ class TodoToolset(Toolset):
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "id": {"type": "integer", "description": "Task number (1-based)"},
-                                    "content": {"type": "string", "description": "Task description"},
+                                    "id": {"type": "integer"},
+                                    "content": {"type": "string"},
                                     "status": {
                                         "type": "string",
                                         "enum": ["pending", "in_progress", "completed", "failed", "skipped"],
-                                        "description": "Current task status",
                                     },
                                 },
                                 "required": ["id", "content", "status"],
@@ -99,16 +93,6 @@ class TodoToolset(Toolset):
                     "required": ["tasks"],
                 },
                 handler=self._todo_write,
-            ),
-            ToolDef(
-                name="todo_read",
-                description="Read the current investigation task list.",
-                parameters={
-                    "type": "object",
-                    "properties": {},
-                    "required": [],
-                },
-                handler=self._todo_read,
             ),
         ]
 
@@ -122,13 +106,4 @@ class TodoToolset(Toolset):
             status=ToolStatus.SUCCESS,
             output="Tasks updated.",
             invocation=f"todo_write({len(tasks)} tasks)",
-        )
-
-    def _todo_read(self, params: dict) -> ToolOutput:
-        return ToolOutput(
-            tool_call_id="",
-            tool_name="todo_read",
-            status=ToolStatus.SUCCESS,
-            output="Use todo_write to set and update tasks.",
-            invocation="todo_read()",
         )

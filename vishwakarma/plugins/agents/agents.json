@@ -10,8 +10,8 @@
     {
       "id": "rds-investigation",
       "update_date": "2026-03-12",
-      "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. Covers instances: bap-reader-1, bap-writer-1, bap-reader-3, bpp-writer-1, bpp-reader-1. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
-      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "atlas-customer", "atlas-driver", "memory", "db"],
+      "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. Covers instances: bap-reader-1, bap-writer-1, bap-reader-3, bpp-writer-1, bpp-reader-1, utils-db-instance, utils-db. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
+      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "atlas-customer", "atlas-driver", "memory", "db", "customer-r", "customer-w", "driver-r"],
       "runbook": "../runbooks/aws/rds-investigation.md"
     },
     {
