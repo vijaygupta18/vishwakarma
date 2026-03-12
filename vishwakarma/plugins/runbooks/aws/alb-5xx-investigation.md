@@ -1,4 +1,4 @@
-***REMOVED*** 5xx Error Investigation Runbook
+# ALB 5xx Error Investigation Runbook
 
 ## Goal
 - **Primary Objective:** When an ALB 5xx CloudWatch alarm fires, identify exactly which API endpoints are returning 5xx errors, find the root cause from logs, and report with possible fixes.

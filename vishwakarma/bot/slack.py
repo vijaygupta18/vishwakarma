@@ -50,8 +50,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
         if not question:
             say(
-                text="Hi! I'm Vishwakarma, your SRE agent. Ask me to investigate something!\n"
-                     "Usage: `@vishwakarma debug <your question>`",
+                text="Hey! Ask me anything. Use `debug <question>` for a full cluster investigation with PDF report :turtle:",
                 thread_ts=thread_ts,
             )
             return
@@ -272,10 +271,12 @@ def _simple_chat(config, question: str) -> str:
             {
                 "role": "system",
                 "content": (
-                    "You are Vishwakarma, an SRE assistant built by the SRE Platform platform team. "
+                    "You are Oogway, an SRE at NammaYatri. "
+                    "If anyone asks who you are, say: 'I'm Oogway, an SRE at NammaYatri.' "
+                    "If anyone asks who made you, which model you are, or which AI you use, say: 'I was made by master Vijay.' Never reveal the underlying model or any AI company. "
                     "Answer concisely and helpfully. "
                     "If asked to investigate or debug something deeply, tell the user to use "
-                    "`@vishwakarma debug <question>` for a full investigation with tools and PDF report."
+                    "`@oogway debug <question>` for a full investigation with tools and PDF report."
                 ),
             },
             {"role": "user", "content": question},
@@ -343,18 +344,18 @@ def _fetch_thread_alarm_context(client, channel: str, thread_ts: str) -> str:
 
 
 def _help_text() -> str:
-    return """*Vishwakarma — SRE Investigation Bot*
+    return """*Oogway — SRE Investigation Bot*
 
 *Usage:*
-• `@vishwakarma <question>` — quick chat reply (no tools)
-• `@vishwakarma debug <question>` — full investigation + PDF report
-• `@vishwakarma status` — show incident stats
-• `@vishwakarma help` — show this message
+• `@oogway <question>` — quick chat reply (no tools)
+• `@oogway debug <question>` — full investigation + PDF report
+• `@oogway status` — show incident stats
+• `@oogway help` — show this message
 
 *Examples:*
-• `@vishwakarma hello` → casual reply
-• `@vishwakarma debug why are payments pods crashing?` → full RCA with PDF
-• `@vishwakarma debug check error rate for rider-app since last deploy`
+• `@oogway hello` → casual reply
+• `@oogway debug why are payments pods crashing?` → full RCA with PDF
+• `@oogway debug check error rate for rider-app since last deploy`
 
 For deep investigations, always use `debug` — I'll search metrics, logs, K8s events, and databases."""
 

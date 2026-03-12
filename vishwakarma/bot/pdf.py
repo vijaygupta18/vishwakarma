@@ -389,9 +389,6 @@ def generate_pdf(
         meta = meta or {}
         meta_items = _build_meta_items(meta, source, sev_label)
 
-        # Evidence (tool outputs)
-        evidence_html = _build_evidence(tool_outputs or [])
-
         # Footer stats
         footer_stats = _build_footer(meta, now)
 
@@ -424,7 +421,6 @@ def generate_pdf(
 <!-- ── Body ── -->
 <div class="body">
   {body_html}
-  {evidence_html}
   <div class="footer">
     <div><span class="footer-brand">Vishwakarma</span> · SRE Platform SRE · Auto-generated RCA</div>
     <div>{footer_stats}</div>

@@ -185,7 +185,7 @@ class VishwakarmaConfig:
     def __init__(self, raw: dict):
         self._raw = raw
 
-        ***REMOVED*** config
+        # Parse config
         llm_cfg = raw.get("llm", {})
         self.llm = LLMConfig(
             model=_env("VK_MODEL", llm_cfg.get("model", "gpt-4o")),

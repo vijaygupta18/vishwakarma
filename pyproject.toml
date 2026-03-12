@@ -8,7 +8,6 @@ version = "1.0.0"
 description = "Autonomous SRE agent — Detect, Diagnose, Suggest, Fix"
 requires-python = ">=3.11"
 dependencies = [
-    ***REMOVED***
     "litellm>=1.40.0",
     "openai>=1.30.0",
 
