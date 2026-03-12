@@ -84,6 +84,7 @@ class InvestigationEngine:
         compactions = 0
         all_tool_outputs: list[ToolOutput] = []
         pending_approvals: list[PendingApproval] = []
+        tool_call_counter = 0
 
         # Decisions index for approval workflow
         decisions = {d.tool_call_id: d for d in (approval_decisions or [])}
@@ -129,6 +130,10 @@ class InvestigationEngine:
                 response_format=response_schema,
             )
 
+            # Log intermediate AI reasoning text (mirrors Holmes "AI: ..." output)
+            if response.content and response.content.strip():
+                log.info(f"[bold #00FFFF]AI:[/bold #00FFFF] {response.content}")
+
             # No tool calls → LLM is done
             if not response.tool_calls:
                 meta = self.llm.build_meta(step + 1, compactions, start_time)
@@ -156,6 +161,10 @@ class InvestigationEngine:
                     for tc in response.tool_calls
                 ],
             })
+
+            # Log tool call summary (mirrors Holmes-style progress output)
+            n_calls = len(response.tool_calls)
+            log.info(f"The AI requested {n_calls} tool call(s).")
 
             # Pre-check all tool calls (guards + approvals) then execute in parallel
             to_execute: list[tuple[str, str, dict]] = []  # (call_id, tool_name, params)
@@ -216,8 +225,11 @@ class InvestigationEngine:
                 to_execute.append((call_id, tool_name, params))
 
             # Execute approved tools in parallel
-            def _run_tool(call_id: str, tool_name: str, params: dict) -> tuple[str, ToolOutput, str]:
-                log.info(f"Executing tool: {tool_name}({json.dumps(params)[:200]})")
+            def _run_tool(call_id: str, tool_name: str, params: dict, tool_idx: int = 0) -> tuple[str, ToolOutput, str]:
+                # Describe the call briefly (first param value, truncated)
+                desc = next(iter(params.values()), "") if params else ""
+                desc = str(desc)[:60].replace("\n", " ")
+                log.info(f"Running tool #{tool_idx} [bold]{tool_name}[/bold]: {desc}")
                 output = self.executor.execute(tool_name, params)
                 output.tool_call_id = call_id
                 if output.status == ToolStatus.ERROR:
@@ -240,10 +252,10 @@ class InvestigationEngine:
             if to_execute:
                 workers = min(16, len(to_execute))
                 with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {
-                        pool.submit(_run_tool, cid, tname, tparams): cid
-                        for cid, tname, tparams in to_execute
-                    }
+                    futures = {}
+                    for cid, tname, tparams in to_execute:
+                        tool_call_counter += 1
+                        futures[pool.submit(_run_tool, cid, tname, tparams, tool_call_counter)] = cid
                     for future in as_completed(futures):
                         cid, output, content = future.result()
                         executed[cid] = (output, content)
@@ -306,6 +318,7 @@ class InvestigationEngine:
         """
         guard = LoopGuard()
         compactions = 0
+        tool_call_counter = 0
         decisions = {d.tool_call_id: d for d in (approval_decisions or [])}
 
         system = build_system_prompt(
@@ -376,8 +389,13 @@ class InvestigationEngine:
                     continue
                 parsed.append((call_id, tool_name, params))
 
-            # Emit start events for all tools that will run
+            # Log tool count and emit start events
+            log.info(f"The AI requested {len(parsed)} tool call(s).")
             for call_id, tool_name, params in parsed:
+                tool_call_counter += 1
+                desc = next(iter(params.values()), "") if params else ""
+                desc = str(desc)[:60].replace("\n", " ")
+                log.info(f"Running tool #{tool_call_counter} [bold]{tool_name}[/bold]: {desc}")
                 yield {"type": "tool_call_start", "tool": tool_name, "params": params}
 
             def _run_stream_tool(call_id: str, tool_name: str, params: dict):

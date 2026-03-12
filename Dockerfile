@@ -60,8 +60,8 @@ ENV PATH=/root/.local/bin:$PATH
 COPY vishwakarma/ ./vishwakarma/
 COPY pyproject.toml .
 
-# Install the package itself (editable-like, no deps)
-RUN pip install --no-cache-dir --no-deps -e .
+# Install the package itself (no deps — already installed above)
+RUN pip install --no-cache-dir --no-deps .
 
 # Data directory for SQLite PVC
 RUN mkdir -p /data

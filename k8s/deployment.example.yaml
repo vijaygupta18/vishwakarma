@@ -1,0 +1,167 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vishwakarma-data
+  namespace: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vishwakarma-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    llm:
+      model: openai/open-large
+      api_base: <LLM_API_BASE>
+      max_tokens: 65536
+      temperature: 0.0
+      timeout: 300
+
+    cluster_name: <CLUSTER_NAME>
+    max_steps: 40
+    dedup_window: 300
+
+    server:
+      host: 0.0.0.0
+      port: 5050
+
+    storage:
+      db_path: /data/vishwakarma.db
+
+    toolsets:
+      kubernetes:
+        enabled: true
+      kubernetes_logs:
+        enabled: true
+      prometheus:
+        enabled: true
+        config:
+          url: "<PROMETHEUS_URL>"
+      elasticsearch:
+        enabled: true
+        config:
+          url: "<ELASTICSEARCH_URL>"
+      grafana:
+        enabled: true
+        config:
+          url: "<LOKI_URL>"
+      bash:
+        enabled: true
+        config:
+          safe_mode: false
+          allow: [aws, stern, echo, timeout, grep, head, tail]
+          block: [rm, curl, wget, env, printenv, nc, netcat, python, pip]
+      database:
+        enabled: false
+      http:
+        enabled: true
+      internet:
+        enabled: true
+      aws:
+        enabled: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vishwakarma
+  namespace: monitoring
+  labels:
+    app: vishwakarma
+    version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vishwakarma
+  template:
+    metadata:
+      labels:
+        app: vishwakarma
+    spec:
+      serviceAccountName: holmes-readonly
+      containers:
+        - name: vishwakarma
+          image: <ECR_REGISTRY>/vishwakarma:<IMAGE_TAG>
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5050
+              name: http
+          env:
+            ***REMOVED***
+            - name: VK_API_KEY
+              value: "<LLM_API_KEY>"
+            - name: VK_API_BASE
+              value: "<LLM_API_BASE>"
+            - name: OVERRIDE_MAX_CONTENT_SIZE
+              value: "131072"
+            - name: OVERRIDE_MAX_OUTPUT_TOKEN
+              value: "65536"
+            # Slack
+            - name: SLACK_BOT_TOKEN
+              value: "<SLACK_BOT_TOKEN>"
+            - name: SLACK_APP_TOKEN
+              value: "<SLACK_APP_TOKEN>"
+            # Config file path
+            - name: VK_CONFIG
+              value: /etc/vishwakarma/config.yaml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vishwakarma
+              readOnly: true
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5050
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 5050
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: vishwakarma-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: vishwakarma-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vishwakarma
+  namespace: monitoring
+  labels:
+    app: vishwakarma
+spec:
+  type: ClusterIP
+  selector:
+    app: vishwakarma
+  ports:
+    - port: 5050
+      targetPort: 5050
+      name: http

@@ -1,4 +1,5 @@
-k8s/
+k8s/deployment.yaml
+k8s/rbac.yaml
 PLAN.md
 
 # Python

@@ -57,7 +57,7 @@ def create_app(config=None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    suppress_probe_logs(app)
+    suppress_probe_logs()
 
     # Initialize toolset manager and storage once at startup
     _state: dict[str, Any] = {}

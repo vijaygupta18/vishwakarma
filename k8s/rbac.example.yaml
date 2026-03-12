@@ -1,0 +1,74 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vishwakarma
+  namespace: monitoring
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vishwakarma-readonly
+rules:
+  # Core resources — read only
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - nodes
+      - services
+      - endpoints
+      - namespaces
+      - events
+      - configmaps
+      - persistentvolumeclaims
+      - persistentvolumes
+      - resourcequotas
+      - limitranges
+    verbs: ["get", "list", "watch"]
+  # Apps
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+  # Autoscaling
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  # Batch
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  # Metrics (for kubectl top)
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vishwakarma-readonly
+subjects:
+  - kind: ServiceAccount
+    name: vishwakarma
+    namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: vishwakarma-readonly
+  apiGroup: rbac.authorization.k8s.io
