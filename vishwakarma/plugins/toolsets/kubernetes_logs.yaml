@@ -1,0 +1,78 @@
+name: kubernetes_logs
+description: "Stream and search Kubernetes pod logs using kubectl and stern."
+enabled: true
+prerequisites:
+  - command: kubectl version --client --short
+    error: "kubectl not found."
+
+tools:
+  - name: kubectl_logs_search
+    description: "Search pod logs for a pattern. Combines grep with kubectl logs."
+    command: "kubectl logs {pod_name} -n {namespace} --tail={tail_lines} | grep -i {pattern}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: pattern
+        description: "Text pattern to search for (case-insensitive)"
+        type: string
+        required: true
+      - name: tail_lines
+        type: integer
+        default: 500
+
+  - name: kubectl_logs_since
+    description: "Get logs from the last N minutes/hours."
+    command: "kubectl logs {pod_name} -n {namespace} --since={since} {args}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: since
+        description: "Duration e.g. 30m, 1h, 24h"
+        type: string
+        default: "1h"
+      - name: args
+        type: string
+        default: ""
+
+  - name: stern_logs
+    description: "Stream logs from multiple pods matching a name/selector using stern."
+    command: "stern {selector} -n {namespace} --tail={tail_lines} --since={since} {args}"
+    params:
+      - name: selector
+        description: "Pod name prefix or label selector e.g. 'rider-app' or '-l app=bap'"
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: tail_lines
+        type: integer
+        default: 50
+      - name: since
+        type: string
+        default: "30m"
+      - name: args
+        type: string
+        default: ""
+
+  - name: kubectl_previous_logs
+    description: "Get logs from the previous (crashed/restarted) container instance."
+    command: "kubectl logs {pod_name} -n {namespace} --previous --tail={tail_lines}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: tail_lines
+        type: integer
+        default: 200

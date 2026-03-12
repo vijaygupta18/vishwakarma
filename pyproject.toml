@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "vishwakarma"
+version = "1.0.0"
+description = "Autonomous SRE agent — Detect, Diagnose, Suggest, Fix"
+requires-python = ">=3.11"
+dependencies = [
+    ***REMOVED***
+    "litellm>=1.40.0",
+    "openai>=1.30.0",
+
+    # Server
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.29.0",
+
+    # CLI
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+
+    # Models
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+
+    # Config
+    "pyyaml>=6.0.1",
+
+    # Templates
+    "jinja2>=3.1.4",
+
+    # Caching
+    "cachetools>=5.3.3",
+
+    # Logging
+    "colorlog>=6.8.2",
+
+    # HTTP
+    "httpx>=0.27.0",
+    "requests>=2.32.0",
+
+    # Slack bot
+    "slack-bolt>=1.18.1",
+
+    # PDF generation
+    "weasyprint>=61.0",
+    "markdown>=3.6",
+
+    # CLI extras
+    "prompt-toolkit>=3.0.47",
+
+    # Toolset deps
+    "kubernetes>=30.1.0",
+    "boto3>=1.34.0",
+]
+
+[project.scripts]
+vk = "vishwakarma.cli:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vishwakarma*"]
+
+[tool.setuptools.package-data]
+vishwakarma = [
+    "plugins/toolsets/**/*.yaml",
+    "plugins/toolsets/**/*.yml",
+    "plugins/prompts/**/*.jinja2",
+    "plugins/runbooks/**/*.md",
+    "plugins/agents/*.json",
+]

@@ -1,0 +1,34 @@
+{
+  "agents": [
+    {
+      "id": "alb-5xx-investigation",
+      "update_date": "2026-03-12",
+      "description": "Investigate AWS ALB 5xx CloudWatch alarms. Identifies which API endpoints are returning 5xx errors using CloudWatch metrics, then queries Elasticsearch Istio and application logs to find the failing APIs, error messages, and root cause. For alerts: ALB5xxErrors, HTTPCode_Target_5XX_Count, HTTPCode_ELB_5XX_Count.",
+      "runbook": "../runbooks/aws/alb-5xx-investigation.md"
+    },
+    {
+      "id": "rds-investigation",
+      "update_date": "2026-03-12",
+      "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. Covers instances: bap-reader-1, bap-writer-1, bap-reader-3, bpp-writer-1, bpp-reader-1. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
+      "runbook": "../runbooks/aws/rds-investigation.md"
+    },
+    {
+      "id": "redis-investigation",
+      "update_date": "2026-03-12",
+      "description": "Investigate AWS ElastiCache Redis alerts: high CPU, high memory, key evictions, high connections, low cache hit ratio, replication lag. Covers clusters: main-redis-cluster, location-redis, utils-redis-cluster. For alerts: RedisHighCPU, RedisHighMemory, RedisEvictions, RedisHighConnections.",
+      "runbook": "../runbooks/aws/redis-investigation.md"
+    },
+    {
+      "id": "ny-system-alerts",
+      "update_date": "2026-03-12",
+      "description": "Investigate SRE Platform system-level alerts: login success rate drop, drainer lag (customer/driver), producer not producing, system config parse failure, Multimodal 5xx errors, Trinetra job failures, drainer pod unavailability. Alert labels: ny-system-alerts. Covers: LoginSuccessRate, ProducerNotProducing, NoDriverDrainerRunning, DriverDrainerLagIncreasing, SystemConfigParseFailure, TrinetraTriggered, Multimodal5xx.",
+      "runbook": "../runbooks/sre-platform/ny-system-alerts.md"
+    },
+    {
+      "id": "ny-sre-sev2-alerts",
+      "update_date": "2026-03-12",
+      "description": "Investigate SRE Platform SEV2 alerts: Beckn 5xx errors, Juspay gateway/registry 5xx, ONDC gateway/registry 5xx, ride-to-search ratio drop, allocator not functioning. Alert labels: alert-ny-sre-sev2. Covers: Beckn5xxErrors, BecknExternalAPI5xx, JuspayGateway5xx, ONDCGateway5xx, RideToSearchRatioDown, AllocatorLooksDead.",
+      "runbook": "../runbooks/sre-platform/ny-sre-sev2-alerts.md"
+    }
+  ]
+}

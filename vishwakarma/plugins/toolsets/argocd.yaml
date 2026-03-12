@@ -1,0 +1,39 @@
+name: argocd
+description: "Query ArgoCD application sync status, health, and history."
+enabled: true
+prerequisites:
+  - command: argocd version --client
+    error: "argocd CLI not found. Set ARGOCD_SERVER and ARGOCD_AUTH_TOKEN env vars."
+
+tools:
+  - name: argocd_app_list
+    description: "List all ArgoCD applications and their sync/health status."
+    command: "argocd app list {args}"
+    params:
+      - name: args
+        type: string
+        default: ""
+
+  - name: argocd_app_get
+    description: "Get details of a specific ArgoCD application."
+    command: "argocd app get {app_name}"
+    params:
+      - name: app_name
+        type: string
+        required: true
+
+  - name: argocd_app_history
+    description: "Get deployment history of an ArgoCD application."
+    command: "argocd app history {app_name}"
+    params:
+      - name: app_name
+        type: string
+        required: true
+
+  - name: argocd_app_diff
+    description: "Show diff between live state and desired state."
+    command: "argocd app diff {app_name}"
+    params:
+      - name: app_name
+        type: string
+        required: true

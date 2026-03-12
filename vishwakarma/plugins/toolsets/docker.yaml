@@ -1,0 +1,54 @@
+name: docker
+description: "Inspect Docker containers, images, logs, and resource usage."
+enabled: true
+prerequisites:
+  - command: docker info
+    error: "Docker daemon not running or docker CLI not found."
+
+tools:
+  - name: docker_ps
+    description: "List running (or all) containers."
+    command: "docker ps {args}"
+    params:
+      - name: args
+        description: "e.g. '-a --filter name=myapp'"
+        type: string
+        default: ""
+
+  - name: docker_logs
+    description: "Get logs from a container."
+    command: "docker logs {container} --tail={tail_lines} {args}"
+    params:
+      - name: container
+        type: string
+        required: true
+      - name: tail_lines
+        type: integer
+        default: 100
+      - name: args
+        type: string
+        default: ""
+
+  - name: docker_inspect
+    description: "Inspect a container's full configuration and state."
+    command: "docker inspect {container}"
+    params:
+      - name: container
+        type: string
+        required: true
+
+  - name: docker_stats
+    description: "Show live resource usage for containers (one snapshot)."
+    command: "docker stats --no-stream {args}"
+    params:
+      - name: args
+        type: string
+        default: ""
+
+  - name: docker_images
+    description: "List Docker images."
+    command: "docker images {args}"
+    params:
+      - name: args
+        type: string
+        default: ""

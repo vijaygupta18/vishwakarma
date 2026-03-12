@@ -1,0 +1,65 @@
+name: aks
+description: "Query Azure Kubernetes Service (AKS) clusters via az CLI."
+enabled: false
+
+prerequisites:
+  - command: az aks list --output table
+    error: "Azure CLI (az) not found or not logged in. Run: az login"
+
+tools:
+  - name: az_aks_list
+    description: "List AKS clusters in a resource group."
+    command: "az aks list --resource-group {resource_group} --output table"
+    params:
+      - name: resource_group
+        type: string
+        required: true
+
+  - name: az_aks_get_credentials
+    description: "Get kubeconfig for an AKS cluster."
+    command: "az aks get-credentials --resource-group {resource_group} --name {cluster_name}"
+    params:
+      - name: resource_group
+        type: string
+        required: true
+      - name: cluster_name
+        type: string
+        required: true
+
+  - name: az_aks_show
+    description: "Show details of a specific AKS cluster."
+    command: "az aks show --resource-group {resource_group} --name {cluster_name}"
+    params:
+      - name: resource_group
+        type: string
+        required: true
+      - name: cluster_name
+        type: string
+        required: true
+
+  - name: az_monitor_metrics
+    description: "Query Azure Monitor metrics for a resource."
+    command: >
+      az monitor metrics list
+      --resource {resource_id}
+      --metric {metric_name}
+      --start-time {start_time}
+      --end-time {end_time}
+      --interval {interval}
+    params:
+      - name: resource_id
+        type: string
+        required: true
+      - name: metric_name
+        type: string
+        required: true
+      - name: start_time
+        type: string
+        required: true
+      - name: end_time
+        type: string
+        required: true
+      - name: interval
+        description: "e.g. PT5M"
+        type: string
+        default: "PT5M"

@@ -1,0 +1,42 @@
+name: cilium
+description: "Diagnose Cilium CNI: endpoint health, network policies, Hubble flows."
+enabled: true
+prerequisites:
+  - command: cilium status --brief
+    error: "cilium CLI not found or Cilium not running on this cluster."
+
+tools:
+  - name: cilium_status
+    description: "Overall Cilium health status."
+    command: "cilium status"
+    params: []
+
+  - name: cilium_endpoint_list
+    description: "List all Cilium endpoints (pods) with their policy enforcement status."
+    command: "cilium endpoint list {args}"
+    params:
+      - name: args
+        type: string
+        default: ""
+
+  - name: cilium_policy_get
+    description: "Get active Cilium network policies."
+    command: "cilium policy get"
+    params: []
+
+  - name: hubble_observe
+    description: "Observe network flows via Hubble (requires Hubble relay running)."
+    command: "hubble observe {args}"
+    params:
+      - name: args
+        description: "e.g. '--namespace payments --last 100 --verdict DROPPED'"
+        type: string
+        default: "--last 50"
+
+  - name: cilium_connectivity_test
+    description: "Run Cilium connectivity test to check cluster network health."
+    command: "cilium connectivity test {args}"
+    params:
+      - name: args
+        type: string
+        default: "--test-namespace kube-system"

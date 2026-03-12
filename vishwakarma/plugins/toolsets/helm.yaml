@@ -1,0 +1,55 @@
+name: helm
+description: "Inspect Helm releases, chart history, and values."
+enabled: true
+prerequisites:
+  - command: helm version --short
+    error: "helm CLI not found."
+
+tools:
+  - name: helm_list
+    description: "List all Helm releases in a namespace."
+    command: "helm list -n {namespace} {args}"
+    params:
+      - name: namespace
+        type: string
+        default: "--all-namespaces"
+      - name: args
+        type: string
+        default: ""
+
+  - name: helm_status
+    description: "Get the status and manifest of a Helm release."
+    command: "helm status {release_name} -n {namespace}"
+    params:
+      - name: release_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: helm_history
+    description: "Show revision history of a Helm release."
+    command: "helm history {release_name} -n {namespace}"
+    params:
+      - name: release_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: helm_get_values
+    description: "Get the current values of a Helm release."
+    command: "helm get values {release_name} -n {namespace} {args}"
+    params:
+      - name: release_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: args
+        description: "--all to include default values"
+        type: string
+        default: ""

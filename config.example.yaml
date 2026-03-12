@@ -1,0 +1,124 @@
+# Vishwakarma — Example Configuration
+# Copy to ~/.vishwakarma/config.yaml and fill in your values
+# All fields can also be set via environment variables (VK_ prefix)
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+llm:
+  model: openai/open-large           # Juspay AI
+  api_base: https://<llm-api-base>
+  api_key: sk-xxx                    # or set VK_API_KEY env var
+  max_tokens: 65536
+  temperature: 0.0
+  timeout: 300
+
+# ── Cluster ───────────────────────────────────────────────────────────────────
+cluster_name: eks-kurukshetra        # shown in system prompt to LLM
+max_steps: 40                        # max investigation steps before giving up
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  host: 0.0.0.0
+  port: 5050
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+storage:
+  db_path: /data/vishwakarma.db      # SQLite on PVC
+
+# ── Alert Deduplication ───────────────────────────────────────────────────────
+dedup_window: 300                    # seconds — ignore same alert within this window
+
+# ── Slack Bot ─────────────────────────────────────────────────────────────────
+slack:
+  bot_token: xoxb-xxx                # or set SLACK_BOT_TOKEN env var
+  app_token: xapp-xxx                # or set SLACK_APP_TOKEN env var
+  signing_secret: xxx                # or set SLACK_SIGNING_SECRET env var
+
+# ── Toolsets ──────────────────────────────────────────────────────────────────
+toolsets:
+
+  kubernetes:
+    enabled: true
+    # No extra config — uses kubeconfig / in-cluster ServiceAccount
+
+  kubernetes_logs:
+    enabled: true
+
+  prometheus:
+    enabled: true
+    config:
+      url: http://victoria-metrics-single-server.monitoring.svc.cluster.local:8428
+      # bearer_token: xxx   # if auth required
+
+  elasticsearch:
+    enabled: true
+    config:
+      url: http://elasticsearch.logging.svc.cluster.local:9200
+      # username: elastic
+      # password: xxx
+
+  grafana:
+    enabled: true
+    config:
+      url: http://grafana.monitoring.svc.cluster.local:3000
+      api_key: glsa_xxx              # Grafana Service Account token
+
+  bash:
+    enabled: true
+    config:
+      safe_mode: false               # true = only pre-approved commands
+      allow:                         # always allow these command prefixes
+        - kubectl
+        - aws
+        - stern
+        - helm
+      block:                         # always block these command prefixes
+        - rm
+        - wget
+        - dd
+
+  database:
+    enabled: true
+    config:
+      connections:
+        - name: rider_db_aws
+          type: postgresql
+          host: ${AWS_DB_HOST}       # from env
+          port: 5432
+          database: atlas_app_v2
+          username: readonly
+          password: ${AWS_DB_PASS}
+
+        - name: driver_db_aws
+          type: postgresql
+          host: ${AWS_DB_HOST}
+          port: 5432
+          database: atlas_driver_offer_bpp_v2
+          username: readonly
+          password: ${AWS_DB_PASS}
+
+  http:
+    enabled: true
+    config:
+      timeout: 30
+
+  internet:
+    enabled: true
+    config:
+      timeout: 10
+
+  aws:
+    enabled: true
+    # Uses IAM role attached to K8s ServiceAccount (IRSA)
+    # Or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
+
+# ── Runbooks ──────────────────────────────────────────────────────────────────
+# Optional text snippets included in every investigation prompt
+runbooks:
+  - "For payment failures, always check the rider-app and protocol-gateway pods first"
+  - "For high latency, start with VictoriaMetrics queries before checking logs"
+
+# ── Custom CA Certificate ─────────────────────────────────────────────────────
+# certificate: |
+#   -----BEGIN CERTIFICATE-----
+#   ...
+#   -----END CERTIFICATE-----

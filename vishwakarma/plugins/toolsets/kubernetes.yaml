@@ -1,0 +1,172 @@
+name: kubernetes
+description: "Query Kubernetes cluster: pods, nodes, deployments, events, namespaces"
+enabled: true
+prerequisites:
+  - command: kubectl version --client --short
+    error: "kubectl not found. Install kubectl or run inside a pod with a kubeconfig."
+
+tools:
+  - name: kubectl_get_pods
+    description: "List pods in a namespace (or all namespaces). Use label selectors to filter."
+    command: "kubectl get pods {args}"
+    params:
+      - name: args
+        description: "kubectl args e.g. '-n payments -l app=rider-app -o wide'"
+        type: string
+        required: true
+
+  - name: kubectl_describe_pod
+    description: "Describe a specific pod — shows events, resource limits, restarts."
+    command: "kubectl describe pod {pod_name} -n {namespace}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_get_events
+    description: "Get Kubernetes events for a namespace. Sorted by time."
+    command: "kubectl get events -n {namespace} --sort-by=.lastTimestamp {args}"
+    params:
+      - name: namespace
+        type: string
+        required: true
+      - name: args
+        type: string
+        default: ""
+
+  - name: kubectl_logs
+    description: "Fetch logs from a pod/container. Use -p for previous container."
+    command: "kubectl logs {pod_name} -n {namespace} {args}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: args
+        description: "-c container_name --tail=100 --since=1h -p"
+        type: string
+        default: "--tail=100"
+
+  - name: kubectl_get_deployment
+    description: "Describe or get deployment details including replicas, rollout status."
+    command: "kubectl get deployment {deployment_name} -n {namespace} -o yaml"
+    params:
+      - name: deployment_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_rollout_status
+    description: "Check rollout status of a deployment."
+    command: "kubectl rollout status deployment/{deployment_name} -n {namespace}"
+    params:
+      - name: deployment_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_rollout_history
+    description: "Get rollout history of a deployment."
+    command: "kubectl rollout history deployment/{deployment_name} -n {namespace}"
+    params:
+      - name: deployment_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_get_nodes
+    description: "List all cluster nodes with status and resource info."
+    command: "kubectl get nodes -o wide {args}"
+    params:
+      - name: args
+        type: string
+        default: ""
+
+  - name: kubectl_describe_node
+    description: "Describe a node — capacity, allocatable resources, conditions."
+    command: "kubectl describe node {node_name}"
+    params:
+      - name: node_name
+        type: string
+        required: true
+
+  - name: kubectl_top_pods
+    description: "Show CPU/memory usage for pods."
+    command: "kubectl top pods -n {namespace} {args}"
+    params:
+      - name: namespace
+        type: string
+        default: "--all-namespaces"
+      - name: args
+        type: string
+        default: ""
+
+  - name: kubectl_top_nodes
+    description: "Show CPU/memory usage for nodes."
+    command: "kubectl top nodes"
+    params: []
+
+  - name: kubectl_get_configmap
+    description: "Get a ConfigMap's contents."
+    command: "kubectl get configmap {name} -n {namespace} -o yaml"
+    params:
+      - name: name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_get_hpa
+    description: "Get Horizontal Pod Autoscaler status and metrics."
+    command: "kubectl get hpa -n {namespace} -o wide {args}"
+    params:
+      - name: namespace
+        type: string
+        required: true
+      - name: args
+        type: string
+        default: ""
+
+  - name: kubectl_get_pvc
+    description: "Get PersistentVolumeClaims in a namespace."
+    command: "kubectl get pvc -n {namespace} -o wide"
+    params:
+      - name: namespace
+        type: string
+        required: true
+
+  - name: kubectl_exec
+    description: "Run a command inside a pod container. Use for diagnostics only."
+    command: "kubectl exec {pod_name} -n {namespace} -- {exec_command}"
+    params:
+      - name: pod_name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: true
+      - name: exec_command
+        description: "Command to run inside the pod e.g. 'cat /etc/hosts'"
+        type: string
+        required: true
+
+  - name: kubectl_run_query
+    description: "Run a generic kubectl query. Use for queries not covered by other tools."
+    command: "kubectl {query}"
+    params:
+      - name: query
+        description: "Full kubectl arguments e.g. 'get svc -n payments -o json'"
+        type: string
+        required: true
