@@ -15,7 +15,8 @@ Bash rules:
 
 Example config.yaml:
   llm:
-    model: openai/open-large
+    model: openai/open-large        # main reasoning model
+    fast_model: openai/open-fast    # cheap/fast model for summarization + compaction
     api_base: https://<llm-api-base>
     api_key: sk-...
 
@@ -189,6 +190,7 @@ class VishwakarmaConfig:
         llm_cfg = raw.get("llm", {})
         self.llm = LLMConfig(
             model=_env("VK_MODEL", llm_cfg.get("model", "gpt-4o")),
+            fast_model=_env("VK_FAST_MODEL", llm_cfg.get("fast_model")),
             api_key=_env("VK_API_KEY", llm_cfg.get("api_key")),
             api_base=_env("VK_API_BASE", llm_cfg.get("api_base")),
             api_version=_env("VK_API_VERSION", llm_cfg.get("api_version")),

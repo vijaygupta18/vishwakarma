@@ -29,6 +29,7 @@ os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 class LLMConfig(BaseModel):
     model: str
+    fast_model: str | None = None  # cheap/fast model for summarization + compaction
     api_key: str | None = None
     api_base: str | None = None
     api_version: str | None = None
@@ -225,12 +226,13 @@ class VishwakarmaLLM:
 
     def summarize(self, prompt: str) -> str:
         """
-        Make a fast, cheap LLM call to compress a long tool output.
-        Used when a tool returns more content than is useful for the context window.
+        Fast, cheap LLM call to compress a long tool output.
+        Uses fast_model if configured (open-fast), otherwise falls back to main model.
         """
+        model = self.cfg.fast_model or self.cfg.model
         try:
             response = completion(
-                model=self.cfg.model,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=1024,
