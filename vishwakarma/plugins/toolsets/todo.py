@@ -63,8 +63,8 @@ class TodoToolset(Toolset):
     def __init__(self, config: dict):
         self._config = config
 
-    def check_prerequisites(self) -> None:
-        pass  # always available
+    def check_prerequisites(self) -> tuple[bool, str]:
+        return True, ""
 
     def get_tools(self) -> list[ToolDef]:
         return [

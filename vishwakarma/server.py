@@ -277,15 +277,16 @@ async def _run_alert_investigation(config, state, issue, incident_id: str):
         prior_context = _build_prior_context(issue)
 
         # Load only the runbook matching this alert (saves ~14K tokens vs loading all)
+        # Falls back to LLM classification if no keyword match found
         from vishwakarma.config import load_matching_runbooks
         alert_name = issue.labels.get("alertname") or issue.title
-        matched_runbooks = load_matching_runbooks(alert_name)
+        matched_runbooks = load_matching_runbooks(alert_name, llm=llm)
 
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: engine.investigate(
                 question=question,
-                runbooks=matched_runbooks or config.runbooks,
+                runbooks=matched_runbooks or None,
                 extra_system_prompt=prior_context or None,
             ),
         )

@@ -26,7 +26,7 @@ class SlackDestination:
 
     def __init__(self, config: dict):
         self._token = config.get("token") or os.environ.get("SLACK_BOT_TOKEN", "")
-        self._channel = config.get("channel", "#sre-alerts")
+        self._channel = config.get("channel") or os.environ.get("SLACK_CHANNEL", "#sre-alerts")
         self._mention = config.get("mention_on_critical", "")
         self._client = None
 

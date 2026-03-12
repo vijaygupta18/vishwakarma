@@ -399,48 +399,89 @@ def _load_runbooks(extra: list[str]) -> list[str]:
     return runbooks
 
 
-def load_matching_runbooks(alert_name: str) -> list[str]:
+def load_matching_runbooks(alert_name: str, llm=None) -> list[str]:
     """
-    Use catalog.json to find and load only the runbook(s) relevant to this alert.
-    Falls back to loading all runbooks if catalog not found or no match.
-    Saves ~14K tokens per investigation by skipping unrelated runbooks.
+    Find the runbook(s) relevant to this alert.
+
+    Two-stage matching:
+    1. Fast: keyword match against agents.json — zero LLM cost, used for known alert patterns
+    2. Fallback: if no keyword match, ask the LLM to classify from the agents.json catalog
+       (one cheap classification call). If LLM also finds no match, investigate without runbook.
     """
     import json
 
     agents_path = Path(__file__).parent / "plugins" / "agents" / "agents.json"
-    runbooks_dir = Path(__file__).parent / "plugins" / "runbooks"
 
     if not agents_path.exists():
-        return _load_runbooks([])
+        return []
 
     try:
         agents = json.loads(agents_path.read_text())["agents"]
     except Exception as e:
         log.warning(f"Could not load agents.json: {e}")
-        return _load_runbooks([])
+        return []
 
     alert_lower = alert_name.lower()
-    matched = []
 
+    def _load_runbook_for_entry(entry: dict) -> str | None:
+        runbook_ref = entry.get("runbook", "")
+        runbook_path = (agents_path.parent / runbook_ref).resolve()
+        if runbook_path.exists():
+            try:
+                content = runbook_path.read_text(encoding="utf-8").strip()
+                log.info(f"Matched runbook '{entry['id']}' for alert '{alert_name}'")
+                return f"# Runbook: {runbook_path.stem}\n\n{content}"
+            except Exception as e:
+                log.warning(f"Could not load runbook {runbook_path}: {e}")
+        return None
+
+    # ── Stage 1: keyword match ────────────────────────────────────────────────
+    matched = []
     for entry in agents:
         desc = entry.get("description", "").lower()
-        entry_id = entry.get("id", "").lower()
-        if alert_lower in desc or any(
-            word in alert_lower for word in entry_id.replace("-", " ").split()
-        ):
-            # runbook path is relative to agents.json location
-            runbook_ref = entry.get("runbook", "")
-            runbook_path = (agents_path.parent / runbook_ref).resolve()
-            if runbook_path.exists():
-                try:
-                    content = runbook_path.read_text(encoding="utf-8").strip()
-                    matched.append(f"# Runbook: {runbook_path.stem}\n\n{content}")
-                    log.debug(f"Matched runbook '{entry_id}' for alert '{alert_name}'")
-                except Exception as e:
-                    log.warning(f"Could not load runbook {runbook_path}: {e}")
+        keywords = [k.lower() for k in entry.get("keywords", [])]
+        if alert_lower in desc or any(kw in alert_lower for kw in keywords):
+            rb = _load_runbook_for_entry(entry)
+            if rb:
+                matched.append(rb)
 
     if matched:
         return matched
 
-    log.debug(f"No specific runbook match for '{alert_name}' — loading all runbooks")
-    return _load_runbooks([])
+    # ── Stage 2: LLM classification fallback ─────────────────────────────────
+    if llm is None:
+        log.info(f"No keyword match for '{alert_name}' and no LLM available — investigating without runbook")
+        return []
+
+    log.info(f"No keyword match for '{alert_name}' — asking LLM to classify from agents catalog")
+
+    catalog_lines = []
+    for entry in agents:
+        catalog_lines.append(f"- id: {entry['id']}\n  description: {entry.get('description', '')}")
+    catalog_text = "\n".join(catalog_lines)
+
+    prompt = (
+        f"You are a runbook router. Given an alert name, pick the single most relevant runbook ID from the catalog below.\n\n"
+        f"Alert: {alert_name}\n\n"
+        f"Available runbooks:\n{catalog_text}\n\n"
+        f"Reply with ONLY the runbook id (e.g. 'rds-investigation'), or 'none' if no runbook fits."
+    )
+
+    try:
+        chosen_id = llm.summarize(prompt).strip().lower().strip("'\"")
+        log.info(f"LLM classified '{alert_name}' → '{chosen_id}'")
+
+        if chosen_id == "none" or not chosen_id:
+            log.info(f"LLM found no matching runbook for '{alert_name}' — investigating without runbook")
+            return []
+
+        for entry in agents:
+            if entry["id"].lower() == chosen_id:
+                rb = _load_runbook_for_entry(entry)
+                return [rb] if rb else []
+
+        log.warning(f"LLM returned unknown agent id '{chosen_id}'")
+    except Exception as e:
+        log.warning(f"LLM runbook classification failed: {e}")
+
+    return []
