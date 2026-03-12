@@ -7,6 +7,8 @@ Slash commands:
   /tools             — list available tools
   /toolsets          — list toolsets with health status
   /history           — show conversation history
+  /context           — show token count and context window usage
+  /last              — show all tool outputs from the last response
   /save [path]       — save last result to markdown file
   /pdf [path]        — generate PDF from last result
   /reset             — start fresh investigation
@@ -27,6 +29,8 @@ SLASH_COMMANDS = {
     "/tools",
     "/toolsets",
     "/history",
+    "/context",
+    "/last",
     "/save",
     "/pdf",
     "/reset",
@@ -46,6 +50,8 @@ HELP_TEXT = """
 ║    /tools       — list available tools                      ║
 ║    /toolsets    — toolset health status                     ║
 ║    /history     — show conversation so far                  ║
+║    /context     — token count and context window usage      ║
+║    /last        — show all tool outputs from last response  ║
 ║    /save [path] — save last result to markdown              ║
 ║    /pdf  [path] — generate PDF from last result             ║
 ║    /clear       — clear history (start fresh context)       ║
@@ -64,6 +70,7 @@ class InteractiveSession:
         self._tm = toolset_manager or config.make_toolset_manager()
         self._last_result = None
         self._last_question = ""
+        self._last_tool_outputs: list[dict] = []
         self._session_id = session_id or str(uuid.uuid4())
 
         # Load existing session or start fresh
@@ -141,6 +148,12 @@ class InteractiveSession:
                 elif cmd == "/history":
                     self._show_history()
 
+                elif cmd == "/context":
+                    self._show_context()
+
+                elif cmd == "/last":
+                    self._show_last_tool_outputs()
+
                 elif cmd == "/save":
                     self._save_result(arg or "vishwakarma_result.md")
 
@@ -173,8 +186,9 @@ class InteractiveSession:
 
         print()
         tool_count = 0
+        current_tool_outputs: list[dict] = []
 
-        # Snapshot for rollback on interrupt (Holmes pattern)
+        # Snapshot for rollback on interrupt
         history_snapshot = list(self._history)
 
         try:
@@ -196,8 +210,11 @@ class InteractiveSession:
 
                 elif etype == "tool_call_result":
                     status = event.get("status", "")
+                    output = event.get("output", "")
+                    tool = event.get("tool", "")
                     marker = "✓" if status == "success" else "✗"
                     print(f"{TOOL_COLOR}    {marker} {status}\033[0m", flush=True)
+                    current_tool_outputs.append({"tool": tool, "status": status, "output": output})
 
                 elif etype == "done":
                     content = event.get("content", "")
@@ -215,6 +232,7 @@ class InteractiveSession:
                         self._history.append({"role": "user", "content": question})
                         self._history.append({"role": "assistant", "content": content})
                     self._last_result = {"analysis": content, "question": question}
+                    self._last_tool_outputs = current_tool_outputs
                     # Persist to SQLite after every completed turn (crash-safe)
                     self._save_session()
 
@@ -267,6 +285,47 @@ class InteractiveSession:
             role = msg.get("role", "")
             content = str(msg.get("content", ""))[:200]
             print(f"  [{role}] {content}")
+
+    def _show_context(self):
+        from vishwakarma.utils.colors import INFO_COLOR, DIM_COLOR
+        try:
+            import litellm
+            token_count = litellm.token_counter(
+                model=self.config.llm.model,
+                messages=self._history,
+            )
+        except Exception:
+            token_count = sum(len(str(m.get("content", ""))) // 4 for m in self._history)
+
+        try:
+            info = litellm.get_model_info(self.config.llm.model)
+            context_window = info.get("max_input_tokens") or info.get("max_tokens") or 128000
+        except Exception:
+            context_window = 128000
+
+        pct = token_count * 100 // context_window if context_window else 0
+        bar_len = 30
+        filled = bar_len * pct // 100
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"{INFO_COLOR}Context: [{bar}] {pct}% — {token_count:,} / {context_window:,} tokens")
+        print(f"  History: {len(self._history)} messages\033[0m")
+
+    def _show_last_tool_outputs(self):
+        from vishwakarma.utils.colors import TOOL_COLOR, DIM_COLOR, ERROR_COLOR
+        if not self._last_tool_outputs:
+            print(f"{DIM_COLOR}(no tool outputs from last response)\033[0m")
+            return
+        for i, out in enumerate(self._last_tool_outputs, 1):
+            tool = out.get("tool", "unknown")
+            status = out.get("status", "")
+            output = str(out.get("output", ""))
+            color = TOOL_COLOR if status == "success" else ERROR_COLOR
+            print(f"\n{color}[{i}] {tool} — {status}\033[0m")
+            # Show up to 1000 chars
+            if len(output) > 1000:
+                print(output[:1000] + f"\n{DIM_COLOR}  … ({len(output) - 1000} more chars, use /save to see full output)\033[0m")
+            else:
+                print(output)
 
     def _save_result(self, path: str):
         from vishwakarma.utils.colors import INFO_COLOR, ERROR_COLOR

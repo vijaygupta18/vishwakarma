@@ -1,2 +1,32 @@
 k8s/
 PLAN.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Secrets / local config
+config.yaml
+.env
+.env.*
+
+# Runtime artifacts
+*.log
+*.db
+*.sqlite
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/

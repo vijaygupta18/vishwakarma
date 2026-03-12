@@ -121,24 +121,26 @@ def _infer_severity(alarm_name: str) -> str:
 def parse_cloudwatch_slack_message(text: str) -> dict | None:
     """
     Parse a CloudWatch alarm notification posted to Slack.
-    Returns structured alarm data or None if not recognized.
+    Handles two formats:
+      1. Amazon Q format: "CloudWatch Alarm | AlarmName | Region | Account: 12345"
+      2. Direct CloudWatch format: "ALARM: 'rider-app-cpu-high' in Asia Pacific"
 
-    Example Slack messages from CloudWatch:
-    - "ALARM: 'rider-app-cpu-high' in Asia Pacific (Mumbai)"
-    - "OK: 'rider-app-cpu-high' state is now OK"
+    Returns structured alarm data or None if not recognized.
     """
     if not text:
         return None
 
-    # Match state: ALARM, OK, INSUFFICIENT_DATA
+    # Format 1: Amazon Q CloudWatch alarm message
+    if "CloudWatch Alarm" in text and ("ALARM" in text or "in ALARM" in text):
+        return _parse_amazon_q_alarm(text)
+
+    # Format 2: Direct CloudWatch notification (ALARM: 'name' in region)
     state_match = re.match(r"^(ALARM|OK|INSUFFICIENT_DATA):\s*['\"]?([^'\"]+)['\"]?", text)
     if not state_match:
         return None
 
     state = state_match.group(1)
     alarm_name = state_match.group(2).strip()
-
-    # Extract region if present
     region_match = re.search(r"in\s+(.+?)(?:\s+region|\s*$)", text, re.IGNORECASE)
     region = region_match.group(1).strip() if region_match else ""
 
@@ -147,5 +149,69 @@ def parse_cloudwatch_slack_message(text: str) -> dict | None:
         "state": state,
         "region": region,
         "is_firing": state == "ALARM",
+        "raw_text": text[:500],
+    }
+
+
+def _parse_amazon_q_alarm(text: str) -> dict | None:
+    """
+    Parse Amazon Q CloudWatch alarm Slack notification.
+    Format: "CloudWatch Alarm | AlarmName | Region | Account: 12345"
+    """
+    # Must be ALARM state — skip OK/resolved messages
+    if "is in OK state" in text or "transitioned to OK" in text:
+        return None
+    if "ALARM state" not in text and "in ALARM" not in text:
+        return None
+
+    header_match = re.search(
+        r"CloudWatch Alarm\s*\|\s*(.+?)\s*\|\s*([\w-]+)\s*\|\s*Account:\s*(\d+)", text
+    )
+    if not header_match:
+        return None
+
+    alarm_name = header_match.group(1).strip()
+    region = header_match.group(2).strip()
+    account = header_match.group(3).strip()
+
+    # Extract reason
+    reason_match = re.search(r"(Threshold Crossed[^\n]+(?:\[[^\]]+\])?[^\n]*)", text)
+    reason = reason_match.group(1).strip() if reason_match else ""
+
+    # Extract metric and namespace
+    namespace_match = re.search(r"Namespace\s*\n?\s*([\w/]+)", text)
+    metric_match = re.search(r"Metric\s*\n?\s*([\w_]+)", text)
+    namespace = namespace_match.group(1).strip() if namespace_match else "AWS"
+    metric = metric_match.group(1).strip() if metric_match else ""
+
+    # Extract alarm start time from message
+    starts_at = datetime.now(timezone.utc).isoformat()
+    time_patterns = [
+        r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z| UTC| \+00:00)?)",
+        r"(\w+ \d{1,2},? \d{4}[,]? \d{1,2}:\d{2}(?::\d{2})? [AP]M UTC)",
+    ]
+    for pattern in time_patterns:
+        time_match = re.search(pattern, text)
+        if time_match:
+            try:
+                raw = time_match.group(1).strip().replace(" UTC", "+00:00").replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(raw)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                starts_at = parsed.isoformat()
+                break
+            except ValueError:
+                pass
+
+    return {
+        "alarm_name": alarm_name,
+        "state": "ALARM",
+        "region": region,
+        "account": account,
+        "namespace": namespace,
+        "metric": metric,
+        "reason": reason,
+        "starts_at": starts_at,
+        "is_firing": True,
         "raw_text": text[:500],
     }

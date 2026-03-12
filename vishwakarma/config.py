@@ -8,7 +8,7 @@ Config file location (in order of precedence):
 
 Environment variables override any YAML config (prefix: VK_).
 
-Bash rules (simpler than Holmes):
+Bash rules:
   safe_mode: true/false — only allow pre-approved safe commands when true
   allow: [aws, kubectl, stern, ...]  — extra commands to permit
   block: [rm, wget, curl, ...]       — commands always blocked regardless

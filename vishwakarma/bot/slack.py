@@ -152,20 +152,86 @@ def start_bot(config: "VishwakarmaConfig") -> None:
         t.start()
 
     @app.event("message")
-    def handle_dm(event, say):
-        """Handle direct messages to the bot — same logic as mentions."""
+    def handle_message(event, say):
+        """
+        Handle two cases:
+          1. Amazon Q CloudWatch alarm posted in a channel → forward to /api/alertmanager
+          2. Direct message to bot → route to mention handler
+        """
         channel_type = event.get("channel_type", "")
-        if channel_type != "im":
-            return
         text = event.get("text", "").strip()
+
+        # Case 1: DM to bot
+        if channel_type == "im":
+            if not text:
+                return
+            handle_mention(
+                {**event, "text": f"<@VK> {text}"},
+                say,
+                None,
+            )
+            return
+
+        # Case 2: Amazon Q CloudWatch alarm in a channel
+        # Skip thread replies to avoid duplicate investigations
+        if event.get("thread_ts") and event.get("thread_ts") != event.get("ts"):
+            return
+
+        # Only process bot messages
+        if not event.get("bot_id") and event.get("subtype") != "bot_message":
+            if "CloudWatch Alarm" not in text:
+                return
+
         if not text:
             return
-        # Re-use mention handler by injecting text as if it were a mention
-        handle_mention(
-            {**event, "text": f"<@VK> {text}"},
-            say,
-            None,
-        )
+
+        from vishwakarma.bot.cloudwatch import parse_cloudwatch_slack_message
+        alarm = parse_cloudwatch_slack_message(text)
+        if not alarm or not alarm.get("is_firing"):
+            return
+
+        alarm_name = alarm["alarm_name"]
+        log.info(f"[CLOUDWATCH] Detected Amazon Q alarm: {alarm_name}")
+
+        alert_payload = {
+            "version": "4",
+            "receiver": "vishwakarma",
+            "status": "firing",
+            "alerts": [{
+                "status": "firing",
+                "labels": {
+                    "alertname": alarm_name,
+                    "severity": "critical",
+                    "source": "cloudwatch",
+                    "region": alarm.get("region", ""),
+                    "aws_account": alarm.get("account", ""),
+                    "aws_namespace": alarm.get("namespace", "AWS"),
+                    "metric": alarm.get("metric", ""),
+                },
+                "annotations": {
+                    "summary": f"CloudWatch Alarm FIRING: {alarm_name}",
+                    "description": alarm.get("reason", ""),
+                },
+                "startsAt": alarm.get("starts_at", ""),
+                "fingerprint": f"cloudwatch-{alarm_name}-{alarm.get('account', '')}",
+            }],
+            "groupLabels": {"alertname": alarm_name},
+        }
+
+        def _forward():
+            try:
+                import requests
+                resp = requests.post(
+                    f"http://localhost:{config.port}/api/alertmanager",
+                    json=alert_payload,
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                log.info(f"[CLOUDWATCH] Forwarded '{alarm_name}' to Vishwakarma: {resp.json()}")
+            except Exception as e:
+                log.error(f"[CLOUDWATCH] Failed to forward '{alarm_name}': {e}")
+
+        threading.Thread(target=_forward, daemon=True).start()
 
     # ── Start ─────────────────────────────────────────────────────────────────
 

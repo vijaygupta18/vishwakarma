@@ -114,6 +114,14 @@ GENERAL_GUIDELINES = """\
 - Correlate across sources: a pod OOM at 17:03 + metric spike at 17:03 = strong signal
 - Distinguish between cause and symptom (high CPU is often a symptom, not a cause)
 
+**Five Whys — drill to root cause:**
+Don't stop at the first "why". Apply iteratively:
+1. Why did the alert fire? → service X returned 5xx
+2. Why did service X return 5xx? → it couldn't connect to Redis
+3. Why couldn't it connect to Redis? → Redis CPU was at 100%
+4. Why was Redis CPU at 100%? → key eviction storm caused by memory exhaustion
+5. Why did memory exhaust? → a new deployment 20 min earlier added a missing cache TTL
+
 **When to stop:**
 - Stop only when you can state the root cause with evidence OR when you've exhausted all reasonable angles
 - Never give up after one failed tool call — try an alternative approach

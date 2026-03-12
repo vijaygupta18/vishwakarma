@@ -238,7 +238,7 @@ class InvestigationEngine:
 
             executed: dict[str, tuple[ToolOutput, str]] = {}
             if to_execute:
-                workers = min(5, len(to_execute))
+                workers = min(16, len(to_execute))
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     futures = {
                         pool.submit(_run_tool, cid, tname, tparams): cid
@@ -400,7 +400,7 @@ class InvestigationEngine:
 
             stream_results: dict[str, tuple[str, Any, str]] = {}
             if parsed:
-                workers = min(5, len(parsed))
+                workers = min(16, len(parsed))
                 with ThreadPoolExecutor(max_workers=workers) as pool:
                     futures = {
                         pool.submit(_run_stream_tool, cid, tname, tparams): cid
