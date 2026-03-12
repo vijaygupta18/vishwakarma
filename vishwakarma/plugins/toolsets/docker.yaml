@@ -1,6 +1,6 @@
 name: docker
 description: "Inspect Docker containers, images, logs, and resource usage."
-enabled: true
+enabled: false
 prerequisites:
   - command: docker info
     error: "Docker daemon not running or docker CLI not found."

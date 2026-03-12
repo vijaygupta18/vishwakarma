@@ -1,6 +1,6 @@
 name: cilium
 description: "Diagnose Cilium CNI: endpoint health, network policies, Hubble flows."
-enabled: true
+enabled: false
 prerequisites:
   - command: cilium status --brief
     error: "cilium CLI not found or Cilium not running on this cluster."

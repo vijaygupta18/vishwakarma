@@ -14,10 +14,17 @@ Endpoints:
 """
 import json
 import logging
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
+
+# In-memory set of fingerprints currently being investigated.
+# Skip only if investigation is RUNNING — clear immediately on completion.
+# Matches Holmes behavior: no time-based window.
+_active_fingerprints: set[str] = set()
+_active_fingerprints_lock = threading.Lock()
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -177,7 +184,7 @@ def create_app(config=None) -> FastAPI:
             raise HTTPException(400, "Invalid JSON")
 
         from vishwakarma.plugins.channels.alertmanager.plugin import parse_alertmanager_webhook
-        from vishwakarma.storage.queries import check_dedup, set_dedup, save_incident, alert_fingerprint
+        from vishwakarma.storage.queries import save_incident, alert_fingerprint
 
         issues = parse_alertmanager_webhook(payload)
         if not issues:
@@ -186,18 +193,20 @@ def create_app(config=None) -> FastAPI:
         triggered = []
         for issue in issues:
             fingerprint = alert_fingerprint(issue.labels)
-            existing = check_dedup(fingerprint)
-            if existing:
-                log.info(f"Alert deduplicated: {issue.title} → existing {existing}")
-                triggered.append({"title": issue.title, "status": "deduplicated", "incident_id": existing})
-                continue
+
+            # Skip only if an investigation for this alert is currently running (Holmes pattern)
+            with _active_fingerprints_lock:
+                if fingerprint in _active_fingerprints:
+                    log.info(f"Alert deduplicated (investigation in progress): {issue.title}")
+                    triggered.append({"title": issue.title, "status": "deduplicated"})
+                    continue
+                _active_fingerprints.add(fingerprint)
 
             incident_id = str(uuid.uuid4())
-            set_dedup(fingerprint, incident_id, config.dedup_window)
 
             # Background investigation
             asyncio.create_task(
-                _run_alert_investigation(config, _state, issue, incident_id)
+                _run_alert_investigation(config, _state, issue, incident_id, fingerprint)
             )
             triggered.append({"title": issue.title, "status": "investigating", "incident_id": incident_id})
 
@@ -263,7 +272,7 @@ def create_app(config=None) -> FastAPI:
 
 # ── Background investigation ───────────────────────────────────────────────────
 
-async def _run_alert_investigation(config, state, issue, incident_id: str):
+async def _run_alert_investigation(config, state, issue, incident_id: str, fingerprint: str = ""):
     import asyncio
 
     tm = state.get("toolset_manager")
@@ -292,6 +301,9 @@ async def _run_alert_investigation(config, state, issue, incident_id: str):
         )
     except Exception as e:
         log.error(f"Alert investigation failed for {issue.title}: {e}", exc_info=True)
+        if fingerprint:
+            with _active_fingerprints_lock:
+                _active_fingerprints.discard(fingerprint)
         return
 
     analysis = result.answer or "(no analysis)"
@@ -347,6 +359,12 @@ async def _run_alert_investigation(config, state, issue, incident_id: str):
         )
     except Exception as e:
         log.warning(f"DB save failed: {e}")
+
+    # Release the dedup lock — next firing of this alert will trigger a fresh investigation
+    if fingerprint:
+        with _active_fingerprints_lock:
+            _active_fingerprints.discard(fingerprint)
+        log.info(f"Investigation complete for {issue.title} — dedup lock released")
 
 
 def _build_prior_context(issue) -> str:

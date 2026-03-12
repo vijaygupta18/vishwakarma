@@ -1,6 +1,6 @@
 name: helm
 description: "Inspect Helm releases, chart history, and values."
-enabled: true
+enabled: false
 prerequisites:
   - command: helm version --short
     error: "helm CLI not found."

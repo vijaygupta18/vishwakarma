@@ -1,6 +1,6 @@
 name: argocd
 description: "Query ArgoCD application sync status, health, and history."
-enabled: true
+enabled: false
 prerequisites:
   - command: argocd version --client
     error: "argocd CLI not found. Set ARGOCD_SERVER and ARGOCD_AUTH_TOKEN env vars."

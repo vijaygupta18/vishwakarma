@@ -29,8 +29,11 @@ DEFAULT_TIMEOUT = 120  # seconds
 class BashToolset(Toolset):
     name = "bash"
     description = (
-        "Run shell/bash commands. Use for anything not covered by other tools. "
-        "Supports: kubectl, aws, helm, jq, grep, awk, etc."
+        "Run shell/bash commands. This is the PRIMARY tool for all infrastructure queries. "
+        "Use kubectl for Kubernetes (pods, events, logs, deployments). "
+        "Use aws CLI for AWS resources (RDS, CloudWatch, ElastiCache, ALB). "
+        "Use stern for multi-pod log streaming. "
+        "Supports: kubectl, aws, stern, jq, grep, awk, sort, timeout, head, tail."
     )
 
     def __init__(self, config: dict):

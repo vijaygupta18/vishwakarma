@@ -60,7 +60,7 @@ class ToolsetManager:
         self._import_python_toolsets()
         for name, cls in _PYTHON_TOOLSET_REGISTRY.items():
             cfg = self._get_config(name)
-            enabled = cfg.get("enabled", True)
+            enabled = cfg.get("enabled", False)  # disabled by default — must opt-in via config
             if not enabled:
                 log.debug(f"Toolset {name} disabled in config")
                 continue
@@ -113,23 +113,24 @@ class ToolsetManager:
 
         for item in sorted(toolsets_dir.iterdir()):
             if item.is_dir() and (item / "__init__.py").exists():
-                module_name = f"{toolsets_pkg}.{item.name}"
+                # Try the package itself, then the inner module (e.g. bash/bash.py)
+                for module_name in [
+                    f"{toolsets_pkg}.{item.name}",
+                    f"{toolsets_pkg}.{item.name}.{item.name}",
+                ]:
+                    try:
+                        importlib.import_module(module_name)
+                    except Exception as e:
+                        log.debug(f"Could not import toolset module {module_name}: {e}")
             elif item.suffix == ".py" and item.name != "__init__.py":
-                module_name = f"{toolsets_pkg}.{item.stem}"
-            else:
-                continue
-
-            try:
-                importlib.import_module(module_name)
-            except ImportError as e:
-                log.debug(f"Could not import toolset module {module_name}: {e}")
+                try:
+                    importlib.import_module(f"{toolsets_pkg}.{item.stem}")
+                except Exception as e:
+                    log.debug(f"Could not import toolset module {item.stem}: {e}")
 
     def active_toolsets(self) -> list[Toolset]:
-        """Return toolsets that are enabled and healthy."""
-        return [
-            ts for ts in self._loaded
-            if ts.enabled and ts.health != ToolsetHealth.FAILED
-        ]
+        """Return all enabled toolsets — include even failed ones so LLM can attempt and get error feedback (matches Holmes behavior)."""
+        return [ts for ts in self._loaded if ts.enabled]
 
     def all_toolsets(self) -> list[Toolset]:
         return self._loaded

@@ -40,28 +40,33 @@ class SlackDestination:
     ) -> dict:
         channel = channel or self._channel
         client = self._get_client()
-        header_emoji = _severity_emoji(severity)
+        color = "#FF0000" if severity in ("critical", "high") else "#00FF00"
+        main_text = f":rotating_light: RCA complete for {title}"
 
-        # Build main message blocks
         blocks: list[dict] = [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": f"{header_emoji} {title[:150]}"},
+                "text": {
+                    "type": "plain_text",
+                    "text": f":rotating_light: RCA: {title[:150]}",
+                    "emoji": True,
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":thread: Investigation complete. See thread for full RCA report.",
+                },
             },
         ]
-        if source:
-            blocks.append({
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"Source: *{source}*"}],
-            })
-        for chunk in _split_text(analysis, 2900):
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
 
-        text = f"{header_emoji} {title}"
-        if severity in ("critical", "high") and self._mention:
-            text = f"{self._mention} {text}"
-
-        kwargs: dict[str, Any] = {"channel": channel, "text": text, "blocks": blocks}
+        kwargs: dict[str, Any] = {
+            "channel": channel,
+            "text": main_text,
+            "attachments": [{"color": color, "blocks": blocks}],
+        }
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
 
@@ -72,21 +77,21 @@ class SlackDestination:
             log.error(f"Slack post failed: {e}")
             return {}
 
-        # Upload PDF and reply in thread (Holmes pattern: upload first, then post permalink)
+        # Upload PDF and post permalink in thread (Holmes pattern)
+        pdf_uploaded = False
         if pdf_path and os.path.exists(pdf_path):
             try:
-                filename = f"rca_{title[:40].replace(' ', '_')}.pdf"
                 file_resp = client.files_upload_v2(
                     content=open(pdf_path, "rb").read(),
-                    filename=filename,
-                    title=f"RCA Report: {title[:80]}",
+                    filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
+                    title=f"RCA - {title}",
                 )
                 if file_resp and "file" in file_resp:
                     permalink = file_resp["file"]["permalink"]
                     client.chat_postMessage(
                         channel=channel,
                         thread_ts=msg_ts,
-                        text=f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
+                        text=f":page_facing_up: *Full RCA Report (PDF)*\n<{permalink}|Download RCA: {title}>",
                         blocks=[
                             {
                                 "type": "section",
@@ -97,8 +102,21 @@ class SlackDestination:
                             }
                         ],
                     )
+                    pdf_uploaded = True
             except Exception as e:
-                log.warning(f"PDF upload failed: {e}")
+                log.warning(f"PDF upload failed, falling back to text: {e}")
+
+        if not pdf_uploaded:
+            # Fallback: chunked text messages in thread (Holmes pattern)
+            MAX_CHUNK_LEN = 2900
+            chunks = [analysis[i:i + MAX_CHUNK_LEN] for i in range(0, len(analysis), MAX_CHUNK_LEN)]
+            for chunk in chunks:
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=msg_ts,
+                    text=chunk,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
+                )
 
         return {"ts": msg_ts, "channel": response["channel"]}
 

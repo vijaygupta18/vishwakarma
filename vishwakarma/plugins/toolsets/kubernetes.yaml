@@ -1,6 +1,6 @@
 name: kubernetes
-description: "Query Kubernetes cluster: pods, nodes, deployments, events, namespaces"
-enabled: true
+description: "Disabled — use the bash tool with kubectl commands directly."
+enabled: false
 prerequisites:
   - command: kubectl version --client --short
     error: "kubectl not found. Install kubectl or run inside a pod with a kubeconfig."

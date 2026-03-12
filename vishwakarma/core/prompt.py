@@ -52,11 +52,9 @@ Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or oth
 If no runbook is provided, investigate in 3 structured phases:
 
 ### PHASE 1 — RECON (run tools in parallel, broad signals)
-Gather wide signals simultaneously. Fire multiple tool calls in one response:
-- K8s: pod status, recent events, resource usage for the affected namespace/service
-- Metrics: error rate, latency p99, saturation for the affected service (use the alert time window)
-- Recent changes: `kubectl rollout history`, recent K8s events sorted by time
-- A quick log search for ERROR/FATAL patterns in the 10 min window around alert start
+Gather wide signals simultaneously. Fire multiple bash tool calls in one response.
+Use raw bash commands — kubectl, aws CLI, stern, grep — directly via the `bash` tool.
+Example parallel calls: `kubectl get pods -n atlas`, `aws cloudwatch describe-alarms --region <region>`, `stern -n atlas app --since=30m`
 
 ### PHASE 2 — HYPOTHESES
 After phase 1 results arrive, state your top 3 hypotheses BEFORE running more tools:
@@ -94,10 +92,10 @@ YES / NO — <if YES, what specifically needs checking>
 WHAT_CHANGED = """\
 ## Detecting What Changed (for K8s/app alerts without a runbook)
 
-If investigating a Kubernetes or application alert without a runbook, run these simultaneously:
-1. `kubectl rollout history <service> -n <namespace>` — detect recent deploys
+If investigating a Kubernetes or application alert without a runbook, run these bash commands simultaneously:
+1. `kubectl rollout history deployment/<service> -n <namespace>` — detect recent deploys
 2. `kubectl get events -n <namespace> --sort-by=.lastTimestamp | tail -30` — detect K8s-level changes
-3. Prometheus: compare error rate at `alert_start_time - 1h` vs `alert_start_time` — sudden spike = deploy/change, gradual = leak/exhaustion
+3. Query Prometheus/VictoriaMetrics for error rate at `alert_start_time - 1h` vs `alert_start_time`
 
 Pattern:
 - **Sudden spike** at a specific time → look for deploy, config change, or traffic surge at that exact time

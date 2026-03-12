@@ -1,6 +1,6 @@
 name: kubernetes_logs
-description: "Stream and search Kubernetes pod logs using kubectl and stern."
-enabled: true
+description: "Disabled — use the bash tool with kubectl/stern commands directly."
+enabled: false
 prerequisites:
   - command: kubectl version --client --short
     error: "kubectl not found."
