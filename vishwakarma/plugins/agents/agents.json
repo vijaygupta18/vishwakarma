@@ -26,21 +26,21 @@
       "update_date": "2026-03-12",
       "description": "Investigate SRE Platform system-level alerts: login success rate drop, drainer lag (customer/driver), producer not producing, system config parse failure, Multimodal 5xx errors, Trinetra job failures, drainer pod unavailability. Alert labels: ny-system-alerts. Covers: LoginSuccessRate, ProducerNotProducing, NoDriverDrainerRunning, DriverDrainerLagIncreasing, SystemConfigParseFailure, TrinetraTriggered, Multimodal5xx.",
       "keywords": ["login", "drainer", "producer", "multimodal", "trinetra", "config", "parse"],
-      "runbook": "../runbooks/sre-platform/ny-system-alerts.md"
+      "runbook": "../runbooks/custom/ny-system-alerts.md"
     },
     {
       "id": "ny-pt-alerts",
       "update_date": "2026-03-13",
       "description": "Investigate SRE Platform Public Transit alerts: CMRL API errors, CRIS API errors, PT external API errors, GRPC notifications dropped, GTFS In-Memory Server 5xx, refunds increased. Alert labels: ny-pt-alerts. Covers: CMRLAPIGivingErrors, CrisAPIGivingErrors, PTExternalAPIErrorsIncreased, GRPCDown, GIMS5xx, Refunds increased.",
       "keywords": ["cmrl", "cris", "grpc", "gtfs", "gims", "refund", "pt-external", "notification", "public-transit", "public-transport"],
-      "runbook": "../runbooks/sre-platform/ny-pt-alerts.md"
+      "runbook": "../runbooks/custom/ny-pt-alerts.md"
     },
     {
       "id": "ny-sre-sev2-alerts",
       "update_date": "2026-03-12",
       "description": "Investigate SRE Platform SEV2 alerts: Beckn 5xx errors, Juspay gateway/registry 5xx, ONDC gateway/registry 5xx, ride-to-search ratio drop, allocator not functioning. Alert labels: alert-ny-sre-sev2. Covers: Beckn5xxErrors, BecknExternalAPI5xx, JuspayGateway5xx, ONDCGateway5xx, RideToSearchRatioDown, AllocatorLooksDead.",
       "keywords": ["beckn", "juspay", "ondc", "sev2", "allocator", "ride", "search", "ratio"],
-      "runbook": "../runbooks/sre-platform/ny-sre-sev2-alerts.md"
+      "runbook": "../runbooks/custom/ny-sre-sev2-alerts.md"
     }
   ]
 }
