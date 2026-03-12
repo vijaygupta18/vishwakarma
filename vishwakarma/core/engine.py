@@ -40,6 +40,7 @@ from vishwakarma.core.tools import ToolExecutor
 log = logging.getLogger(__name__)
 
 DEFAULT_MAX_STEPS = 40
+CHECKPOINT_STEP = 20  # inject a reflection prompt at this step to force RCA-or-continue decision
 
 
 class InvestigationEngine:
@@ -89,6 +90,7 @@ class InvestigationEngine:
         all_tool_outputs: list[ToolOutput] = []
         pending_approvals: list[PendingApproval] = []
         tool_call_counter = 0
+        checkpoint_injected = False
 
         # Decisions index for approval workflow
         decisions = {d.tool_call_id: d for d in (approval_decisions or [])}
@@ -122,6 +124,22 @@ class InvestigationEngine:
 
         for step in range(self.max_steps):
             log.debug(f"Investigation step {step + 1}/{self.max_steps}")
+
+            # Checkpoint: at step 20, force the LLM to decide RCA-or-continue
+            if step == CHECKPOINT_STEP and not checkpoint_injected:
+                checkpoint_injected = True
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"**Investigation Checkpoint (step {step}):** "
+                        "You have gathered significant data. Pause and evaluate:\n"
+                        "1. What is your current best hypothesis for the root cause?\n"
+                        "2. Do you have enough evidence to write the final RCA now?\n"
+                        "   - If YES → write the complete RCA immediately (Root Cause / Confidence / Evidence Chain / Immediate Fix / Prevention).\n"
+                        "   - If NO → state in one sentence exactly what is still missing, then continue investigating.\n\n"
+                        "Be decisive. Do not re-run tools you have already run."
+                    ),
+                })
 
             # Compact if needed (pass llm for LLM-based compaction)
             messages, did_compact = compact_messages(messages, llm=self.llm)

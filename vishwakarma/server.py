@@ -14,6 +14,7 @@ Endpoints:
 """
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -25,6 +26,21 @@ from typing import Any
 # Matches Holmes behavior: no time-based window.
 _active_fingerprints: set[str] = set()
 _active_fingerprints_lock = threading.Lock()
+
+# Global concurrency limit — max simultaneous investigations.
+# Alerts beyond this limit queue and wait rather than running in parallel.
+# Prevents LLM rate limits, memory pressure, and tool contention under alert storms.
+# Override via VK_MAX_CONCURRENT_INVESTIGATIONS env var.
+MAX_CONCURRENT_INVESTIGATIONS = int(os.environ.get("VK_MAX_CONCURRENT_INVESTIGATIONS", "2"))
+_investigation_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_semaphore():
+    import asyncio
+    global _investigation_semaphore
+    if _investigation_semaphore is None:
+        _investigation_semaphore = asyncio.Semaphore(MAX_CONCURRENT_INVESTIGATIONS)
+    return _investigation_semaphore
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -275,28 +291,50 @@ def create_app(config=None) -> FastAPI:
 async def _run_alert_investigation(config, state, issue, incident_id: str, fingerprint: str = ""):
     import asyncio
 
+    semaphore = _get_semaphore()
+    queue_pos = MAX_CONCURRENT_INVESTIGATIONS - semaphore._value
+    if queue_pos >= MAX_CONCURRENT_INVESTIGATIONS:
+        log.info(f"Alert queued (concurrency limit {MAX_CONCURRENT_INVESTIGATIONS} reached): {issue.title}")
+
+    async with semaphore:
+        await _do_investigation(config, state, issue, incident_id, fingerprint)
+
+
+async def _do_investigation(config, state, issue, incident_id: str, fingerprint: str = ""):
+    import asyncio
+
     tm = state.get("toolset_manager")
     llm = config.make_llm()
     engine = config.make_engine(llm=llm, toolset_manager=tm)
 
     try:
         question = issue.question()
-
-        # Inject prior investigation context for recurring alerts
-        prior_context = _build_prior_context(issue)
-
-        # Load only the runbook matching this alert (saves ~14K tokens vs loading all)
-        # Falls back to LLM classification if no keyword match found
-        from vishwakarma.config import load_matching_runbooks
         alert_name = issue.labels.get("alertname") or issue.title
-        matched_runbooks = load_matching_runbooks(alert_name, llm=llm)
 
-        result = await asyncio.get_event_loop().run_in_executor(
+        # Run pre-investigation enrichment in parallel (all are fast/independent)
+        import asyncio as _asyncio
+        loop = _asyncio.get_event_loop()
+        from vishwakarma.config import load_matching_runbooks
+
+        prefetch_future = loop.run_in_executor(None, _prefetch_alert_context, issue)
+        prior_future = loop.run_in_executor(None, _build_prior_context, issue)
+        entities_future = loop.run_in_executor(None, _extract_alert_entities, issue, llm)
+        runbooks_future = loop.run_in_executor(None, load_matching_runbooks, alert_name, llm)
+
+        prefetch_ctx, prior_ctx, entities_ctx, matched_runbooks = await _asyncio.gather(
+            prefetch_future, prior_future, entities_future, runbooks_future
+        )
+
+        # Merge all pre-investigation context into extra_system_prompt
+        extra_parts = [p for p in [entities_ctx, prefetch_ctx, prior_ctx] if p]
+        extra_system_prompt = "\n\n".join(extra_parts) or None
+
+        result = await loop.run_in_executor(
             None,
             lambda: engine.investigate(
                 question=question,
                 runbooks=matched_runbooks or None,
-                extra_system_prompt=prior_context or None,
+                extra_system_prompt=extra_system_prompt,
             ),
         )
     except Exception as e:
@@ -365,6 +403,101 @@ async def _run_alert_investigation(config, state, issue, incident_id: str, finge
         with _active_fingerprints_lock:
             _active_fingerprints.discard(fingerprint)
         log.info(f"Investigation complete for {issue.title} — dedup lock released")
+
+
+def _prefetch_alert_context(issue) -> str:
+    """
+    Pre-fetch K8s context before the agentic loop starts.
+    Runs kubectl commands in parallel so the LLM begins with real signal,
+    not cold — saves the first 3-5 investigation steps.
+    """
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    labels = issue.labels or {}
+    namespace = (
+        labels.get("namespace")
+        or labels.get("kubernetes_namespace")
+        or labels.get("exported_namespace")
+        or "atlas"
+    )
+
+    def _run(cmd: str) -> str:
+        try:
+            out = subprocess.run(
+                ["bash", "-c", cmd],
+                capture_output=True, text=True, timeout=15,
+            )
+            return (out.stdout or "").strip() or "(no output)"
+        except Exception as e:
+            return f"(error: {e})"
+
+    commands = {
+        "pod_status": f"kubectl get pods -n {namespace} --no-headers 2>/dev/null | head -40",
+        "recent_events": (
+            f"kubectl get events -n {namespace} --sort-by=.lastTimestamp "
+            f"--field-selector type!=Normal 2>/dev/null | tail -20"
+        ),
+        "recent_deploys": (
+            f"kubectl get replicasets -n {namespace} --sort-by=.metadata.creationTimestamp "
+            f"-o jsonpath='{{range .items[-5:]}}{{.metadata.name}} {{.metadata.creationTimestamp}}\\n{{end}}' 2>/dev/null"
+        ),
+    }
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_run, cmd): key for key, cmd in commands.items()}
+        for future in as_completed(futures):
+            key = futures[future]
+            results[key] = future.result()
+
+    if all("(no output)" in v or "(error" in v for v in results.values()):
+        return ""
+
+    parts = ["## Pre-fetched Kubernetes Context\n*(gathered before investigation started — use this to skip basic recon)*"]
+    if results.get("pod_status") and "(error" not in results["pod_status"]:
+        parts.append(f"\n### Pod Status (namespace: {namespace})\n```\n{results['pod_status']}\n```")
+    if results.get("recent_events") and "(error" not in results["recent_events"]:
+        parts.append(f"\n### Warning/Critical Events (namespace: {namespace})\n```\n{results['recent_events']}\n```")
+    if results.get("recent_deploys") and "(error" not in results["recent_deploys"]:
+        parts.append(f"\n### Recent ReplicaSets (last 5, namespace: {namespace})\n```\n{results['recent_deploys']}\n```")
+
+    return "\n".join(parts)
+
+
+def _extract_alert_entities(issue, llm) -> str:
+    """
+    Use the fast model to extract key investigation entities from the alert.
+    Gives the main model a head start — costs ~200 tokens, saves 3+ steps.
+    """
+    if not llm or not llm.cfg.fast_model:
+        return ""
+
+    alert_name = issue.labels.get("alertname") or issue.title
+    labels_str = "\n".join(f"  {k}: {v}" for k, v in (issue.labels or {}).items())
+    description = getattr(issue, "description", "") or ""
+
+    prompt = (
+        f"Extract investigation entities from this alert. Be terse and specific.\n\n"
+        f"Alert: {alert_name}\n"
+        f"Labels:\n{labels_str}\n"
+        f"Description: {description}\n\n"
+        f"Return ONLY this structure (fill in what you can infer, leave blank if unknown):\n"
+        f"Service: <kubernetes service name>\n"
+        f"Namespace: <kubernetes namespace>\n"
+        f"Impact: <what is broken for end users>\n"
+        f"Likely area: <RDS/Redis/app/network/deploy>\n"
+        f"Time anchor: <use alert startsAt if available>\n"
+        f"Key metric: <the metric that triggered this alert>"
+    )
+
+    try:
+        extracted = llm.summarize(prompt).strip()
+        if not extracted:
+            return ""
+        return f"## Alert Entity Extraction (fast pre-analysis)\n{extracted}"
+    except Exception:
+        return ""
 
 
 def _build_prior_context(issue) -> str:
