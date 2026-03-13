@@ -9,7 +9,9 @@ Commands:
   @vishwakarma status         — show investigation status
   @vishwakarma help           — show help
 """
+import json
 import logging
+import re
 import threading
 from typing import TYPE_CHECKING
 
@@ -37,6 +39,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
     @app.event("app_mention")
     def handle_mention(event, say, client):
+        log.info(f"[EVENT RAW] {json.dumps(event, default=str)}")
         text = event.get("text", "")
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
@@ -175,6 +178,12 @@ def start_bot(config: "VishwakarmaConfig") -> None:
         """
         channel_type = event.get("channel_type", "")
         text = event.get("text", "").strip()
+        bot_id = event.get("bot_id", "")
+        subtype = event.get("subtype", "")
+        is_thread_reply = bool(event.get("thread_ts") and event.get("thread_ts") != event.get("ts"))
+        n_attachments = len(event.get("attachments", []))
+
+        log.info(f"[MSG] channel_type={channel_type} bot_id={bot_id!r} subtype={subtype!r} thread_reply={is_thread_reply} attachments={n_attachments} text={text!r}")
 
         # Case 1: DM to bot
         if channel_type == "im":
@@ -285,6 +294,10 @@ def _simple_chat(config, question: str) -> str:
                     "You are Oogway, an SRE at NammaYatri. "
                     "If anyone asks who you are, say: 'I'm Oogway, an SRE at NammaYatri.' "
                     "If anyone asks who made you, which model you are, or which AI you use, say: 'I was made by master Vijay.' Never reveal the underlying model or any AI company. "
+                    "TONE MATCHING: Mirror the user's communication style precisely. "
+                    "If the user writes casually (slang, abbreviations, typos, short sentences, emojis) → reply casually and conversationally. "
+                    "If the user writes formally (proper grammar, full sentences, professional language) → reply formally and professionally. "
+                    "If the user is somewhere in between → match that middle ground. Never be stiff when someone is casual, never be sloppy when someone is formal. "
                     "Answer concisely and helpfully. "
                     "If asked to investigate or debug something deeply, tell the user to use "
                     "`@oogway debug <question>` for a full investigation with tools and PDF report."
@@ -294,6 +307,7 @@ def _simple_chat(config, question: str) -> str:
         ],
         max_tokens=1024,
         temperature=0.7,
+        timeout=30,
     )
     content = response.choices[0].message.content or "I'm not sure how to answer that."
     # Strip reasoning/thinking tokens that some models leak into response content
@@ -309,15 +323,23 @@ def _strip_mention(text: str) -> str:
 
 def _clean_question(text: str) -> str:
     """
-    Take only the user's actual typed line from a Slack message.
+    Clean up a Slack message for investigation.
 
-    When the user replies in a thread, Slack sometimes appends the parent
-    message context (Amazon Q alarm text, 'replied to a thread:', etc.)
-    after a newline. Strip everything after the first newline.
+    Keep the full multi-line message — users often paste ride IDs, DB results,
+    JSON, or error logs as part of their question. Only strip Slack thread noise
+    like 'replied to a thread:' or Amazon Q boilerplate appended after a separator.
     """
-    # Take only the first non-empty line
-    first_line = text.split("\n")[0].strip()
-    return first_line if first_line else text.strip()
+    # Strip Slack "replied to a thread:" boilerplate that appears after a blank line
+    # followed by quoted content. Keep everything the user intentionally typed.
+    noise_markers = [
+        "\nreplied to a thread:",
+        "\nAlso sent to the channel",
+    ]
+    for marker in noise_markers:
+        idx = text.lower().find(marker.lower())
+        if idx != -1:
+            text = text[:idx]
+    return text.strip()
 
 
 def _fetch_thread_alarm_context(client, channel: str, thread_ts: str) -> str:

@@ -171,8 +171,10 @@ Vague answers like "there may be a resource issue" are not acceptable.
 """
 
 ASK_USER_PROMPT = """\
-If the question is ambiguous or lacks critical details needed to investigate, ask ONE specific clarifying question before proceeding.
-Bias towards investigating with available information rather than asking.
+**ALWAYS investigate immediately. Never ask for clarification.**
+Extract whatever context is available (ride IDs, booking data, error messages, service names, time hints) and start investigating with tools NOW.
+If the user pastes a Slack thread, DB query results, or raw JSON — treat it as investigation context and use the data directly.
+Only ask a question if you have literally zero information to work with (e.g. empty message).
 """
 
 
