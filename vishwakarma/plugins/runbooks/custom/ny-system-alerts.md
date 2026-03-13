@@ -93,22 +93,42 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 ### Alert: NoDriverDrainerRunning / NoAppDrainerRunning
 **Trigger:** Drainer stop status metric > 0 (drainer has stopped processing).
 
-1. Find actual drainer pod names:
-   `kubectl get pods -A | grep -i drainer`
-   Note namespace, pod names, STATUS, RESTARTS.
+**Step 1 — Confirm metric and pod state (run in parallel):**
+```
+kubectl get pods -n atlas | grep -i drainer
+```
+```
+prometheus: driver_drainer_stop_status or drainer_stop_status
+```
 
-2. Grep drainer logs across all drainer pods:
-   `timeout 30 stern -n <namespace> <drainer-name-from-grep> --since 30m | grep -iE "error|exception|db|connect|timeout|panic|stop|fail" | head -200`
+**Step 2 — Determine which scenario applies and follow it:**
 
-4. Confirm metric in VictoriaMetrics:
-   `driver_drainer_stop_status` and `drainer_stop_status`
+#### Scenario A: Pods are DOWN (0 replicas)
+- `kubectl get deployment -n atlas | grep drainer` → AVAILABLE=0
+- `kubectl get events -n atlas --sort-by=.lastTimestamp | grep -i drainer | tail -20`
+- `kubectl describe pod -n atlas <last-drainer-pod> | grep -A5 "Last State\|OOMKilled\|Reason"`
+- **Root cause:** Node eviction, OOM kill, or manual scale-down
+- **Fix:** `kubectl scale deployment/<drainer> -n atlas --replicas=5`
 
-5. Check pod events for OOMKilled or crash details:
-   `kubectl describe pod -n <namespace> <pod-name-from-step-1> | grep -A5 "Last State\|OOMKilled\|Reason\|Events"`
+#### Scenario B: Pods RUNNING + stop_status=1 → Query execution error (most likely)
+The drainer processes a queue of DB writes. A single bad record with a fatal SQL error causes the drainer to halt internally while the pod stays alive.
+- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "sqlState|BATCH_INSERT|integer out of range|constraint|deadlock|error|panic" | head -100`
+- Look for: `sqlState 22003` (integer overflow), `BATCH_INSERT_FAILED`, `constraint violation`
+- **Root cause:** Bad/corrupt record in drainer queue causing repeated SQL failures → drainer halts
+- **Fix:** `kubectl rollout restart deployment/<drainer> -n atlas` to clear stopped state, then fix the bad record or schema
 
-6. If DB errors found in logs → run RDS pivot (see Synthesize section).
+#### Scenario C: Pods RUNNING + stop_status=1 → DB connectivity issue
+- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "connection refused|too many connections|timeout|postgres" | head -100`
+- Check RDS CPU + connections for driver RDS instances (atlas-driver-w3, driver-r1) via CloudWatch
+- **Root cause:** DB overloaded, connection pool exhausted, or RDS failover in progress
+- **Fix:** Resolve DB issue first, then restart drainer
 
-**Possible root causes:** DB connectivity issue, drainer crashed, OOM, configuration issue.
+#### Scenario D: Pods RUNNING, no SQL/DB errors → Metrics anomaly
+- Verify: `prometheus: rate(driver_query_drain_latency_count[5m])` — if > 0, drainer IS processing (false alert)
+- **Root cause:** Stale metric or transient spike
+- **Fix:** Monitor for 5 min — if processing rate is non-zero, alert self-resolved
+
+**Likelihood order:** Query execution error → DB connectivity → Pod eviction/OOM → Metrics anomaly
 
 ---
 
@@ -298,3 +318,19 @@ Report: RDS CPU%, connection count, top queries.
 ### If all pods of a service down → image pull failure or resource quota. Report deployment events.
 ### If lag + DB slow → DB is bottleneck. Report RDS CPU and connection count.
 ### If config parse failure after deployment → bad config in new release. Report which service and config field.
+
+---
+
+## Extended Investigation (if runbook steps did not find root cause)
+
+If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
+- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
+- Check services that this component depends on (upstream/downstream)
+- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
+- Check recent changes: deployments, config changes, scaling events in the last 2 hours
+- Query Elasticsearch for error patterns around the incident time
+- Check Prometheus for any other anomalous metrics correlated with the alert time
+- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+
+The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+

@@ -155,3 +155,19 @@ aws pi describe-dimension-keys --service-type RDS --identifier db:<instance-id> 
 ### If specific API only + code exception → application bug. Report handler, exception, first occurrence time, recent deployment.
 ### If all APIs 5xx + recent deployment → bad deployment. Report service, image tag, deploy time.
 ### If ELB 5xx (not Target 5xx) → ALB cannot reach pods. Check if all pods are down.
+
+---
+
+## Extended Investigation (if runbook steps did not find root cause)
+
+If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
+- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
+- Check services that this component depends on (upstream/downstream)
+- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
+- Check recent changes: deployments, config changes, scaling events in the last 2 hours
+- Query Elasticsearch for error patterns around the incident time
+- Check Prometheus for any other anomalous metrics correlated with the alert time
+- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+
+The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+

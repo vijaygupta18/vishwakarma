@@ -237,3 +237,19 @@ State clearly:
 3. **Business impact:** ride-to-search ratio `<before>` → `<after>`, 5xx rate `<before>` → `<after>`
 4. **Root cause:** one sentence
 5. **Recommended fix:** exact action (add index on X, scale instance, fix query in service Y)
+
+---
+
+## Extended Investigation (if runbook steps did not find root cause)
+
+If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
+- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
+- Check services that this component depends on (upstream/downstream)
+- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
+- Check recent changes: deployments, config changes, scaling events in the last 2 hours
+- Query Elasticsearch for error patterns around the incident time
+- Check Prometheus for any other anomalous metrics correlated with the alert time
+- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+
+The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+
