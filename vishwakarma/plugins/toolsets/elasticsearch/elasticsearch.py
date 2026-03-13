@@ -154,6 +154,16 @@ class ElasticsearchToolset(Toolset):
         return fn(params)
 
     def _search(self, params: dict) -> ToolOutput:
+        # LLM sometimes passes the entire ES query as a JSON string in a single param
+        if "index" not in params and len(params) == 1:
+            raw = next(iter(params.values()))
+            if isinstance(raw, str):
+                try:
+                    params = json.loads(raw)
+                except Exception:
+                    pass
+            elif isinstance(raw, dict):
+                params = raw
         index = params["index"]
         body: dict[str, Any] = {
             "query": params["query"],
@@ -204,6 +214,15 @@ class ElasticsearchToolset(Toolset):
             return ToolOutput(status=ToolStatus.ERROR, error=str(e), invocation=invocation)
 
     def _count(self, params: dict) -> ToolOutput:
+        if "index" not in params and len(params) == 1:
+            raw = next(iter(params.values()))
+            if isinstance(raw, str):
+                try:
+                    params = json.loads(raw)
+                except Exception:
+                    pass
+            elif isinstance(raw, dict):
+                params = raw
         index = params["index"]
         body = {"query": params["query"]}
         invocation = f"elasticsearch_count({index})"
