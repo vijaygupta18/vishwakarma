@@ -261,10 +261,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
 
 def _simple_chat(config, question: str) -> str:
-    """Fast LLM reply with no tools — for casual questions."""
+    """Fast LLM reply with no tools — for casual questions.
+    Uses fast_model (open-fast) to avoid reasoning token bleed from open-large.
+    """
+    import re
     import litellm
+    # Always use fast model for chat — open-large is a reasoning model and
+    # will leak its chain-of-thought as visible text in Slack.
+    model = config.llm.fast_model or config.llm.model
     response = litellm.completion(
-        model=config.llm.model,
+        model=model,
         api_key=config.llm.api_key,
         api_base=config.llm.api_base,
         messages=[
@@ -284,7 +290,10 @@ def _simple_chat(config, question: str) -> str:
         max_tokens=1024,
         temperature=0.7,
     )
-    return response.choices[0].message.content or "I'm not sure how to answer that."
+    content = response.choices[0].message.content or "I'm not sure how to answer that."
+    # Strip reasoning/thinking tokens that some models leak into response content
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    return content or "I'm not sure how to answer that."
 
 
 def _strip_mention(text: str) -> str:
