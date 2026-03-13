@@ -197,6 +197,11 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             if "CloudWatch Alarm" not in text:
                 return
 
+        # Also pull in attachment text — Amazon Q posts alarm details in attachments, not body
+        for att in event.get("attachments", []):
+            text += "\n" + att.get("text", "") + "\n" + att.get("fallback", "")
+        text = text.strip()
+
         if not text:
             return
 

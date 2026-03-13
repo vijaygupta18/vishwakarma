@@ -131,7 +131,7 @@ def parse_cloudwatch_slack_message(text: str) -> dict | None:
         return None
 
     # Format 1: Amazon Q CloudWatch alarm message
-    if "CloudWatch Alarm" in text and ("ALARM" in text or "in ALARM" in text):
+    if "CloudWatch Alarm" in text:
         return _parse_amazon_q_alarm(text)
 
     # Format 2: Direct CloudWatch notification (ALARM: 'name' in region)
@@ -158,10 +158,8 @@ def _parse_amazon_q_alarm(text: str) -> dict | None:
     Parse Amazon Q CloudWatch alarm Slack notification.
     Format: "CloudWatch Alarm | AlarmName | Region | Account: 12345"
     """
-    # Must be ALARM state — skip OK/resolved messages
-    if "is in OK state" in text or "transitioned to OK" in text:
-        return None
-    if "ALARM state" not in text and "in ALARM" not in text:
+    # Skip OK/resolved messages — firing alarms don't have these phrases
+    if "is in OK state" in text or "transitioned to OK" in text or "State: OK" in text:
         return None
 
     header_match = re.search(
