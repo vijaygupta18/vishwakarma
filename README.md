@@ -1,46 +1,304 @@
 # Vishwakarma
 
-Autonomous SRE investigation agent. Receives alerts, runs a multi-step agentic investigation using your observability stack, and posts a structured RCA to Slack with a PDF report.
+> **Autonomous SRE investigation agent.** Receives alerts, runs a multi-step agentic investigation across your entire observability stack, and posts a structured RCA to Slack with a PDF report — no human needed.
+
+---
+
+## Architecture Overview
+
+```mermaid
+graph TB
+    subgraph Inputs["🔔 Alert Sources"]
+        AM[AlertManager<br/>Webhook]
+        CW[CloudWatch<br/>Amazon Q → Slack]
+        SNS[CloudWatch SNS<br/>→ Lambda]
+        SLACK[Slack<br/>@oogway debug ...]
+    end
+
+    subgraph Server["⚡ Vishwakarma Server :5050"]
+        API[POST /api/alertmanager]
+        DEDUP[Dedup Check<br/>fingerprint hash]
+        ENRICH[Pre-Enrichment<br/>4 parallel tasks]
+        ENGINE[Investigation Engine<br/>Agentic Loop ≤40 steps]
+    end
+
+    subgraph Tools["🛠️ Toolsets"]
+        BASH[bash<br/>kubectl · aws · stern]
+        PROM[prometheus<br/>VictoriaMetrics]
+        ES[elasticsearch<br/>Istio + App logs]
+        HTTP[http · internet]
+    end
+
+    subgraph Outputs["📤 Outputs"]
+        PDF[PDF Report]
+        SPOST[Slack Post<br/>RCA + PDF thread]
+        DB[(SQLite<br/>/data/vishwakarma.db)]
+    end
+
+    AM --> API
+    SNS --> API
+    CW -->|parse + forward| API
+    SLACK -->|direct call| ENGINE
+
+    API --> DEDUP
+    DEDUP -->|new alert| ENRICH
+    DEDUP -->|duplicate| SKIP[skip]
+    ENRICH --> ENGINE
+
+    ENGINE <-->|tool calls| BASH
+    ENGINE <-->|tool calls| PROM
+    ENGINE <-->|tool calls| ES
+    ENGINE <-->|tool calls| HTTP
+
+    ENGINE --> PDF
+    ENGINE --> SPOST
+    ENGINE --> DB
+```
+
+---
+
+## Alert → RCA Flow
+
+```mermaid
+sequenceDiagram
+    participant AM as AlertManager
+    participant SRV as Server
+    participant PRE as Pre-Enrichment
+    participant LLM as LLM (open-large)
+    participant TOOLS as Toolsets
+    participant SLACK as Slack
+
+    AM->>SRV: POST /api/alertmanager {firing}
+    SRV->>SRV: Dedup check (fingerprint hash)
+    Note over SRV: Returns 200 immediately (non-blocking)
+
+    par Pre-enrichment (parallel)
+        SRV->>PRE: kubectl pod status + events
+        SRV->>PRE: SQLite prior incidents lookup
+        SRV->>PRE: fast_model entity extraction
+        SRV->>PRE: Runbook keyword match
+    end
+
+    PRE-->>SRV: K8s snapshot + prior context + entities + runbook
+
+    loop Agentic Loop (≤40 steps)
+        SRV->>LLM: messages + tools schema
+        LLM-->>SRV: tool_calls[]
+
+        alt has tool calls
+            par Parallel execution (≤16 tools)
+                SRV->>TOOLS: tool_call_1
+                SRV->>TOOLS: tool_call_2
+                SRV->>TOOLS: tool_call_N
+            end
+            TOOLS-->>SRV: results (summarized if >8KB)
+            Note over SRV: Step 20: checkpoint injection
+        else no tool calls
+            Note over SRV: Investigation complete
+        end
+    end
+
+    SRV->>SRV: generate_pdf()
+    SRV->>SLACK: post RCA summary
+    SRV->>SLACK: upload PDF in thread
+    SRV->>SRV: save_incident() → SQLite
+```
+
+---
+
+## Slack Bot Flow
+
+```mermaid
+flowchart TD
+    MSG[Slack Event] --> TYPE{Event type?}
+
+    TYPE -->|app_mention| STRIP[Strip @mention from text]
+    TYPE -->|DM| STRIP
+    TYPE -->|channel message| ISBOT{Is bot message?}
+
+    ISBOT -->|yes| CWCHECK{Contains<br/>CloudWatch Alarm?}
+    ISBOT -->|no| DROP[ignore]
+
+    CWCHECK -->|yes| CWPARSE[parse_cloudwatch_slack_message]
+    CWCHECK -->|no| DROP
+
+    CWPARSE -->|is_firing=true| FORWARD[POST /api/alertmanager]
+    CWPARSE -->|resolved / unknown| DROP
+
+    STRIP --> CLEAN[_clean_question<br/>first non-empty line only]
+    CLEAN --> CMD{Command?}
+
+    CMD -->|help / ?| HELPTEXT[Post help text]
+    CMD -->|status| STATS[Query SQLite stats]
+    CMD -->|debug ...| THREAD{In a thread?}
+    CMD -->|anything else| CHAT[_simple_chat<br/>fast_model, no tools]
+
+    THREAD -->|yes| ALARM[Fetch thread parent<br/>extract alarm context]
+    THREAD -->|no| INV[run_investigation]
+    ALARM --> INV
+
+    INV --> ENGINE[engine.investigate]
+    ENGINE --> PDF[generate_pdf]
+    PDF --> SPOST[SlackDestination.post_investigation]
+    SPOST --> SAVE[save_incident → SQLite]
+
+    CHAT --> TONE{Detect tone}
+    TONE -->|casual| CRES[Casual reply]
+    TONE -->|formal| FRES[Formal reply]
+    TONE -->|mixed| MRES[Matched reply]
+```
+
+---
+
+## Investigation Engine — Agentic Loop
+
+```mermaid
+flowchart TD
+    START([investigate called]) --> BUILD[Build system prompt<br/>+ runbook + knowledge + history]
+    BUILD --> LOOP{Step ≤ max_steps?}
+
+    LOOP -->|yes| COMPACT{Context > 80%<br/>of max_tokens?}
+    COMPACT -->|yes| COMPACTION[Compact: summarise old<br/>turns with fast_model]
+    COMPACT -->|no| LLM_CALL[Call LLM]
+    COMPACTION --> LLM_CALL
+
+    LLM_CALL --> RESP{Response has<br/>tool_calls?}
+
+    RESP -->|no tool calls| DONE([Return LLMResult<br/>with final RCA])
+
+    RESP -->|has tool calls| GUARD{Loop guard:<br/>same tool+params<br/>already called?}
+    GUARD -->|blocked| SKIP[Skip duplicate call]
+    GUARD -->|allowed| EXEC
+
+    SKIP --> LOOP
+
+    EXEC[Execute tools in parallel<br/>ThreadPoolExecutor 16 workers] --> RESULTS[Collect results]
+    RESULTS --> LARGE{Output > 8KB?}
+    LARGE -->|yes| SUMMARISE[Summarise with fast_model]
+    LARGE -->|no| APPEND
+    SUMMARISE --> APPEND[Append to messages]
+
+    APPEND --> STEP20{Step == 20<br/>and not checkpointed?}
+    STEP20 -->|yes| CHECKPOINT[Inject checkpoint message:<br/>RCA now or state what is missing]
+    STEP20 -->|no| LOOP
+    CHECKPOINT --> LOOP
+
+    LOOP -->|exceeded| FORCE([Force final answer])
+```
+
+---
+
+## Pre-Enrichment (Before Every Investigation)
+
+```mermaid
+flowchart LR
+    ALERT[Alert received] --> PAR
+
+    subgraph PAR[Run in parallel]
+        K8S["🔍 kubectl\npod status + warning events\n+ recent replicasets"]
+        PRIOR["📚 SQLite lookup\nlast 3 investigations\nof this alert"]
+        ENTITY["⚡ fast_model\nextract: service, namespace\nimpact, key metric"]
+        RUNBOOK["📖 Runbook match\nkeyword → agents.json\n→ LLM fallback"]
+    end
+
+    PAR --> MERGE[Merge into extra_system_prompt]
+    MERGE --> ENGINE[Investigation Engine]
+```
+
+---
+
+## Runbook Matching
+
+```mermaid
+flowchart TD
+    ALERT[Alert name] --> KW{Keyword match<br/>in agents.json?}
+
+    KW -->|match found| RB[Load runbook .md]
+    KW -->|no match| LLM[LLM classification<br/>pick best from catalog]
+
+    LLM --> FOUND{Match?}
+    FOUND -->|yes| RB
+    FOUND -->|no| GENERIC[Use generic investigation prompt]
+
+    RB --> INJECT[Inject into system prompt]
+    GENERIC --> INJECT
+
+    subgraph CATALOG[agents.json — 6 runbooks]
+        R1[alb-5xx-investigation<br/>keywords: alb, 5xx, elb, gateway]
+        R2[rds-investigation<br/>keywords: rds, cpu, database, postgres]
+        R3[redis-investigation<br/>keywords: redis, elasticache, eviction]
+        R4[ny-system-alerts<br/>keywords: drainer, producer, login]
+        R5[ny-sre-sev2-alerts<br/>keywords: beckn, juspay, allocator]
+        R6[ny-pt-alerts<br/>keywords: cmrl, cris, gtfs, grpc]
+    end
+```
+
+---
+
+## CloudWatch Alarm Detection
+
+```mermaid
+flowchart TD
+    subgraph Sources["CloudWatch → Vishwakarma (3 paths)"]
+        PATH1["Path 1: SNS → Lambda\nlambda/handler.py\nsns_to_alertmanager()"]
+        PATH2["Path 2: Amazon Q → Slack\nbot detects 'CloudWatch Alarm'\nin message or attachments"]
+        PATH3["Path 3: AlertManager\ndirect webhook from\nVMAlertManager"]
+    end
+
+    PATH1 -->|POST| API
+    PATH2 --> PARSE["parse_cloudwatch_slack_message()\n① Amazon Q format\n   CloudWatch Alarm | Name | Region | Account\n② Direct format\n   ALARM: 'name' in region"]
+    PATH3 -->|POST| API
+
+    PARSE -->|is_firing=true| FWD["Forward to\nPOST localhost:5050/api/alertmanager"]
+    PARSE -->|is_firing=false or OK| DROP[drop]
+
+    FWD --> API["/api/alertmanager\n→ Investigation Engine"]
+```
+
+---
+
+## Data Model & Storage
+
+```mermaid
+erDiagram
+    incidents {
+        string id PK
+        string title
+        string source
+        string severity
+        string status
+        text question
+        text analysis
+        json tool_outputs
+        json meta
+        json labels
+        datetime created_at
+        datetime updated_at
+        string slack_ts
+        string pdf_path
+    }
+
+    oracle_sessions {
+        string id PK
+        string title
+        json messages
+        datetime created_at
+        datetime updated_at
+    }
+
+    dedup_state {
+        string fingerprint PK
+        string incident_id
+        datetime expires_at
+    }
+
+    incidents ||--o{ dedup_state : "fingerprint links"
+    oracle_sessions ||--o{ incidents : "session history"
+```
 
 ---
 
 ## How It Works
-
-```
-Alert fires (CloudWatch / AlertManager / Slack mention)
-  │
-  ▼
-POST /api/alertmanager
-  │
-  ├─ Dedup check — skip if same alert fingerprint already in-flight (default: 300s window)
-  │
-  ├─ Runbook matching
-  │     Stage 1: keyword match against agents.json (zero LLM cost, instant)
-  │     Stage 2: LLM classification fallback if no keyword match
-  │
-  ├─ Load site knowledge base (/data/knowledge.md)
-  │     Injected into every investigation as "Site Knowledge Base" in system prompt
-  │     Editable without rebuilding the image (just kubectl cp + restart)
-  │
-  ├─ Build system prompt
-  │     Investigation protocol (todo_write plan → parallel recon → hypotheses → RCA)
-  │     + Runbook (step-by-step instructions for this alert type)
-  │     + Site knowledge base (infra-specific mappings, instance names, known gaps)
-  │     + Available toolsets
-  │
-  └─ Agentic loop (up to 40 steps)
-        Each step: LLM decides which tools to call
-        Tools run in parallel (up to 16 simultaneously)
-        Results fed back into context
-        Loop continues until LLM produces a final answer or max_steps reached
-        Safeguards: identical tool+params blocked, bash non-zero exits not retried
-          │
-          ▼
-        Slack: post RCA summary + upload PDF in thread
-        SQLite: save investigation to /data/vishwakarma.db
-```
-
-### Investigation Protocol
 
 Every investigation follows a structured protocol enforced by the system prompt:
 
@@ -48,8 +306,8 @@ Every investigation follows a structured protocol enforced by the system prompt:
 2. **Recon (parallel)** — fire all independent tool calls simultaneously (metrics, logs, K8s events, AWS CLI)
 3. **Hypotheses** — state top 3 before running more tools; eliminate with evidence
 4. **Five Whys** — drill past symptoms to actual root cause
-5. **Final Review** — verify every claim is backed by tool output, not assumed
-6. **Structured RCA** — Root Cause, Confidence (HIGH/MEDIUM/LOW), Evidence Chain, Immediate Fix, Prevention, Needs More Investigation
+5. **Checkpoint at step 20** — LLM must decide: write RCA now or state exactly what's still missing
+6. **Structured RCA** — Root Cause · Confidence (HIGH/MEDIUM/LOW) · Evidence Chain · Immediate Fix · Prevention
 
 ---
 
@@ -61,9 +319,9 @@ Toolsets are enabled/disabled in `config.yaml`. The agent uses only what's enabl
 
 | Toolset | Description |
 |---------|-------------|
-| `bash` | Run shell commands — `kubectl`, `aws`, `stern`, `jq`, `grep`. Allowlist/blocklist controlled per deployment. The primary tool for K8s and AWS investigation. |
-| `kubernetes` | Native K8s API tools (pod status, events, logs). Disabled by default — `bash` with `kubectl` is preferred for flexibility. |
-| `kubernetes_logs` | Fetch pod logs via API. Disabled by default — use `stern` via `bash`. |
+| `bash` | Run shell commands — `kubectl`, `aws`, `stern`, `jq`, `grep`. Allowlist/blocklist controlled per deployment. Primary tool for K8s and AWS investigation. |
+| `kubernetes` | Native K8s API tools (pod status, events, logs). Disabled by default — `bash` with `kubectl` is preferred. |
+| `kubernetes_logs` | Fetch pod logs via K8s API. Disabled by default — use `stern` via `bash`. |
 | `docker` | Inspect Docker containers, images, logs, and resource usage. |
 | `helm` | Inspect Helm releases, chart history, and deployed values. |
 | `argocd` | Query ArgoCD application sync status, health, and rollout history. |
@@ -74,8 +332,8 @@ Toolsets are enabled/disabled in `config.yaml`. The agent uses only what's enabl
 
 | Toolset | Description |
 |---------|-------------|
-| `prometheus` | Query Prometheus/VictoriaMetrics — instant queries (`prometheus_query`) and range queries (`prometheus_query_range`). Always use this, never `http_get` for metrics. |
-| `grafana` | Query Grafana dashboards, panels, and annotations. |
+| `prometheus` | Query Prometheus/VictoriaMetrics — instant and range queries. Always use this, never `http_get` for metrics. |
+| `grafana` | Query Grafana dashboards, panels, and annotations (also Loki). |
 | `datadog` | Query Datadog metrics and monitors. |
 | `newrelic` | Query New Relic metrics and alerts. |
 | `coralogix` | Search Coralogix logs using DataPrime or Lucene syntax. |
@@ -84,10 +342,9 @@ Toolsets are enabled/disabled in `config.yaml`. The agent uses only what's enabl
 
 | Toolset | Description |
 |---------|-------------|
-| `elasticsearch` | Search Elasticsearch/OpenSearch logs using Query DSL. Used for app logs, Istio access logs, error traces. Always use `elasticsearch_search`, never `http_get`. |
-| `grafana` (Loki) | Query Loki logs via Grafana. |
+| `elasticsearch` | Search Elasticsearch/OpenSearch logs using Query DSL. Used for app logs, Istio access logs, error traces. |
+| `http` | HTTP GET to external URLs. Only for external endpoints — never for internal metrics or logs. |
 | `internet` | DNS lookup and basic network diagnostics. |
-| `http` | HTTP GET to external URLs. Use only for external endpoints — never for internal metrics or logs. |
 
 ### Databases & Storage
 
@@ -95,7 +352,6 @@ Toolsets are enabled/disabled in `config.yaml`. The agent uses only what's enabl
 |---------|-------------|
 | `database` | Run read-only SQL queries against PostgreSQL or MySQL. |
 | `mongodb` | Query MongoDB collections (read-only). |
-| `rabbitmq` | Inspect RabbitMQ queues, exchanges, and consumer health. |
 | `kafka` | Inspect Kafka topics, consumer groups, and lag. |
 
 ### Integrations
@@ -106,7 +362,7 @@ Toolsets are enabled/disabled in `config.yaml`. The agent uses only what's enabl
 | `mcp` | Model Context Protocol — connect to MCP-compatible tool servers. |
 | `todo` | Internal task tracker — used by the agent to plan and track investigation steps. |
 
-### Tool Routing Rules (enforced in prompt)
+### Tool Routing Rules
 
 ```
 Metrics / PromQL  →  prometheus_query or prometheus_query_range  (NEVER http_get)
@@ -120,13 +376,15 @@ External URLs     →  http_get
 ## Features
 
 - **Runbook routing** — per-alert runbooks matched by keyword, then LLM classification fallback
+- **Pre-enrichment** — K8s pod status, warning events, prior incidents, entity extraction all run in parallel before the agentic loop starts
 - **Site knowledge base** — `/data/knowledge.md` on PVC, injected into every investigation, no rebuild needed to update
-- **Incident history** — SQLite DB stores all investigations; prior findings for recurring alerts are injected as context
+- **Incident history** — SQLite stores all investigations; prior findings for recurring alerts are injected as context
 - **Parallel tool execution** — up to 16 tools run simultaneously per step
-- **Safeguards** — identical tool+params blocked from re-running; non-zero bash exits not retried; context-aware loop termination
+- **Checkpoint at step 20** — forces LLM to evaluate evidence and write RCA or state what's missing
+- **Safeguards** — identical tool+params blocked from re-running; context-aware loop termination
 - **Context compaction** — long investigations auto-compact to stay within LLM context window
 - **PDF reports** — full RCA with evidence chain uploaded to Slack thread
-- **Slack bot** — `@oogway debug <question>` for on-demand investigations; casual questions answered without tools
+- **Slack bot** — `@oogway debug <question>` for on-demand investigations; casual questions answered with tone-matching
 
 ---
 
@@ -141,9 +399,8 @@ External URLs     →  http_get
 
 ### 2. Configure
 
-Copy and fill in the example config:
 ```bash
-cp config.example.yaml config.yaml   # gitignored
+cp config.example.yaml config.yaml
 ```
 
 Key fields:
@@ -153,6 +410,7 @@ llm:
   model: openai/gpt-4o          # or any OpenAI-compatible model
   api_base: https://...          # omit for OpenAI default
   api_key: sk-...                # or set VK_API_KEY env var
+  fast_model: openai/gpt-4o-mini # used for summarisation, entity extraction, compaction
 
 cluster_name: my-cluster         # shown to LLM in every investigation
 max_steps: 40                    # max agentic loop iterations
@@ -178,7 +436,7 @@ toolsets:
 
 ### 3. Runbooks
 
-Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes how to investigate a specific alert type — what metrics to check, what CLI commands to run, how to interpret findings.
+Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes how to investigate a specific alert type.
 
 **To add a runbook:**
 
@@ -193,8 +451,6 @@ Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes how 
   "runbook": "../runbooks/<category>/<alert-name>.md"
 }
 ```
-
-Keywords are matched case-insensitively against the alert name. If no keyword matches, the LLM picks the best runbook from the catalog automatically.
 
 **Included runbooks:**
 
@@ -230,11 +486,11 @@ worker → my-app-writer
 aws rds describe-db-clusters → no permission
 
 ## Proven Commands
-for i in my-app-writer my-app-reader-1; do echo "=== $i ===" && \
+for i in my-app-writer my-app-reader-1; do
   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
-  --dimensions Name=DBInstanceIdentifier,Value=$i \
-  --start-time START --end-time END --period 300 --statistics Average Maximum \
-  --region us-east-1 --output json | jq -r '.Datapoints|sort_by(.Timestamp)[]|"\(.Timestamp): avg=\(.Average|floor)%"'
+    --dimensions Name=DBInstanceIdentifier,Value=$i \
+    --start-time START --end-time END --period 300 --statistics Average Maximum \
+    --region us-east-1 --output json | jq -r '.Datapoints|sort_by(.Timestamp)[]|"\(.Timestamp): avg=\(.Average|floor)%"'
 done
 ```
 
@@ -253,7 +509,7 @@ kubectl apply -f k8s/deployment.yaml  # PVC + ConfigMap + Deployment + Service
 
 ### 6. Alert Ingestion
 
-**Option A: AlertManager webhook** (Prometheus)
+**Option A: AlertManager webhook** (Prometheus / VMAlertManager)
 ```yaml
 receivers:
   - name: vishwakarma
@@ -262,10 +518,12 @@ receivers:
 ```
 
 **Option B: CloudWatch → Amazon Q → Slack**
+
 Add the bot to the channel where Amazon Q posts CloudWatch alarms. It auto-detects the alarm format and forwards to the agentic loop.
 
 **Option C: CloudWatch → SNS → Lambda → Vishwakarma**
-Deploy the Lambda in `lambda/` — converts SNS CloudWatch events to AlertManager format.
+
+Deploy the Lambda in `lambda/` — converts SNS CloudWatch events to AlertManager format and POSTs to `/api/alertmanager`.
 
 ---
 
@@ -274,7 +532,7 @@ Deploy the Lambda in `lambda/` — converts SNS CloudWatch events to AlertManage
 ```
 vishwakarma/
 ├── core/
-│   ├── engine.py          # Agentic loop — tool calling, parallelism, safeguards
+│   ├── engine.py          # Agentic loop — tool calling, parallelism, safeguards, checkpointing
 │   ├── prompt.py          # System prompt builder (composable sections)
 │   ├── tools.py           # Tool definitions + executor
 │   ├── toolset_manager.py # Loads, validates, and manages toolsets
@@ -291,16 +549,20 @@ vishwakarma/
 │   └── relays/
 │       └── slack/         # Slack result poster (PDF + thread)
 ├── bot/
-│   ├── slack.py           # Slack Socket Mode bot (@mention handler)
-│   └── cloudwatch.py      # CloudWatch alarm Slack message parser
+│   ├── slack.py           # Slack Socket Mode bot (@mention handler, CloudWatch detection)
+│   ├── cloudwatch.py      # CloudWatch alarm parser (Amazon Q + SNS formats)
+│   └── pdf.py             # PDF RCA report generation
 ├── storage/
 │   └── db.py              # SQLite incident storage
-├── server.py              # FastAPI server + endpoints
-└── config.py              # Config loader
+├── server.py              # FastAPI server + pre-enrichment + alert routing
+└── config.py              # Config loader (YAML + env vars)
 
 k8s/
 ├── deployment.yaml        # PVC + ConfigMap + Deployment + Service
 └── rbac.yaml              # ServiceAccount + ClusterRole + ClusterRoleBinding
+
+lambda/
+└── handler.py             # CloudWatch SNS → AlertManager forwarder
 
 knowledge.md               # Gitignored — your site-specific knowledge base
 ```
@@ -316,6 +578,7 @@ knowledge.md               # Gitignored — your site-specific knowledge base
 | `/api/investigate/stream` | POST | Ad-hoc investigation (SSE streaming) |
 | `/api/incidents` | GET | List past investigations |
 | `/api/incidents/{id}` | GET | Get single investigation with full tool output |
+| `/api/stats` | GET | Investigation statistics |
 | `/api/toolsets` | GET | List toolset health and enabled status |
 | `/healthz` | GET | Liveness probe |
 | `/readyz` | GET | Readiness probe |
@@ -327,6 +590,7 @@ knowledge.md               # Gitignored — your site-specific knowledge base
 | What to change | Where |
 |----------------|-------|
 | LLM provider + model | `config.yaml` → `llm.model`, `llm.api_base` |
+| Fast model (summarisation, extraction) | `config.yaml` → `llm.fast_model` |
 | Cluster name shown to LLM | `config.yaml` → `cluster_name` |
 | Prometheus / ES / Grafana URLs | `config.yaml` → `toolsets.*` |
 | Which tools are available | `config.yaml` → `toolsets.*.enabled` |
@@ -334,3 +598,4 @@ knowledge.md               # Gitignored — your site-specific knowledge base
 | Investigation workflow for your alerts | `plugins/runbooks/<your-category>/` |
 | Alert → runbook routing | `plugins/agents/agents.json` |
 | Infra-specific context (instance names, endpoints, mappings) | `/data/knowledge.md` on PVC |
+| Slack bot identity + tone | `bot/slack.py` → `_simple_chat` system prompt |
