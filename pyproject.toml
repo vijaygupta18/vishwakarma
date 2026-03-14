@@ -68,4 +68,5 @@ vishwakarma = [
     "plugins/prompts/**/*.jinja2",
     "plugins/runbooks/**/*.md",
     "plugins/agents/*.json",
+    "ui/static/**/*",
 ]

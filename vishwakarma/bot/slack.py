@@ -32,6 +32,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
     toolset_manager = config.make_toolset_manager()
     toolset_manager.check_all()
+    from vishwakarma.core.learnings import LearningsManager
+    learnings_manager = LearningsManager()
 
     app = App(token=config.slack_bot_token, signing_secret=config.slack_signing_secret)
 
@@ -73,6 +75,38 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 say(text=f"❌ Failed to get stats: {e}", thread_ts=thread_ts)
             return
 
+        # learn [category] <fact>
+        if question_lower.startswith("learn "):
+            rest = question[6:].strip()
+            parts = rest.split(" ", 1)
+            known = learnings_manager._all_categories()
+            if len(parts) >= 2 and parts[0].lower() in known:
+                cat, fact = parts[0].lower(), parts[1]
+            else:
+                cat, fact = "general", rest
+            learnings_manager.append(cat, fact)
+            say(text=f"✅ Learned ({cat}): {fact}", thread_ts=thread_ts)
+            return
+
+        # forget [category] <keyword>
+        if question_lower.startswith("forget "):
+            rest = question[7:].strip()
+            known = learnings_manager._all_categories()
+            parts = rest.split(" ", 1)
+            if len(parts) >= 2 and parts[0].lower() in known:
+                cat, keyword = parts[0].lower(), parts[1]
+            else:
+                cat, keyword = "general", rest
+                # Try all categories
+                total = 0
+                for c in known:
+                    total += learnings_manager.forget(c, keyword)
+                say(text=f"🗑️ Removed {total} fact(s) matching '{keyword}' across all categories", thread_ts=thread_ts)
+                return
+            removed = learnings_manager.forget(cat, keyword)
+            say(text=f"🗑️ Removed {removed} fact(s) matching '{keyword}' from {cat}", thread_ts=thread_ts)
+            return
+
         # debug <question> → full investigation + PDF
         # anything else → simple LLM chat (no tools)
         is_investigation = question_lower.startswith("debug ")
@@ -108,7 +142,13 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             try:
                 llm = config.make_llm()
                 engine = config.make_engine(llm=llm, toolset_manager=toolset_manager)
-                result = engine.investigate(question=full_question)
+                extra = (
+                    "## Learned Knowledge\n"
+                    "Use `learnings_list` to see available learned knowledge categories, "
+                    "then `learnings_read(category)` to load the ones relevant to this investigation. "
+                    "Do this early in your investigation."
+                )
+                result = engine.investigate(question=full_question, extra_system_prompt=extra)
 
                 analysis = result.answer or "(no analysis)"
                 meta = result.meta.model_dump() if result.meta else {}

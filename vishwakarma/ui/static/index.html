@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vishwakarma — SRE Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0f0f14;
+      --surface:  #1a1a24;
+      --surface2: #22222e;
+      --border:   #2a2a3a;
+      --primary:  #7c6ff7;
+      --primary-dim: #5a54c4;
+      --text:     #e0e0e8;
+      --muted:    #808098;
+      --success:  #4caf82;
+      --warning:  #f0a050;
+      --danger:   #e05555;
+      --info:     #5090e0;
+      --radius:   6px;
+      --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, monospace;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Scrollbar ─────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    /* ── Navbar ────────────────────────────────────────────────── */
+    .navbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+    }
+    .navbar-logo {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      color: var(--primary);
+      text-transform: uppercase;
+    }
+    .navbar-tabs {
+      display: flex;
+      gap: 4px;
+    }
+    .tab-btn {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 16px;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); background: var(--surface2); }
+    .tab-btn.active {
+      color: var(--primary);
+      border-color: var(--primary);
+      background: rgba(124, 111, 247, 0.1);
+    }
+
+    /* ── Layout ────────────────────────────────────────────────── */
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding-top: 52px;
+    }
+    .tab-content {
+      display: none;
+      flex: 1;
+      min-height: 0;
+    }
+    .tab-content.active { display: flex; }
+
+    /* ── Learnings layout ──────────────────────────────────────── */
+    .learnings-layout {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 220px;
+      min-width: 220px;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .sidebar-header {
+      padding: 16px 16px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .cat-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background 0.1s, border-color 0.1s;
+      user-select: none;
+    }
+    .cat-item:hover { background: var(--surface2); }
+    .cat-item.active {
+      background: rgba(124, 111, 247, 0.12);
+      border-left-color: var(--primary);
+      color: var(--primary);
+    }
+    .cat-name { font-weight: 500; text-transform: capitalize; }
+    .cat-badge {
+      font-size: 11px;
+      background: var(--surface2);
+      color: var(--muted);
+      padding: 1px 7px;
+      border-radius: 10px;
+      min-width: 24px;
+      text-align: center;
+    }
+    .cat-item.active .cat-badge {
+      background: rgba(124, 111, 247, 0.2);
+      color: var(--primary);
+    }
+
+    /* New category button */
+    .new-cat-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: calc(100% - 16px);
+      margin: 8px 8px 12px;
+      padding: 7px 12px;
+      background: none;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .new-cat-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(124,111,247,0.06); }
+
+    /* New category inline form */
+    .new-cat-form {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 12px 12px;
+      border-top: 1px solid var(--border);
+    }
+    .new-cat-form.visible { display: flex; }
+    .new-cat-form input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .new-cat-form input:focus { border-color: var(--primary); }
+    .new-cat-form input::placeholder { color: var(--muted); }
+    .new-cat-form-actions { display: flex; gap: 6px; }
+    .new-cat-hint { font-size: 11px; color: var(--muted); }
+
+    /* Main panel */
+    .learn-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .learn-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .learn-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      text-transform: capitalize;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .learn-header h2 .cat-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--primary);
+      display: inline-block;
+    }
+
+    .learn-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      min-height: 0;
+    }
+    .learn-body .markdown-render {
+      max-width: 820px;
+    }
+
+    /* Textarea edit mode */
+    .learn-textarea {
+      width: 100%;
+      height: calc(100% - 20px);
+      min-height: 320px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      padding: 16px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .learn-textarea:focus { border-color: var(--primary); }
+
+    /* Edit actions bar */
+    .edit-actions {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .edit-actions.visible { display: flex; }
+    .edit-confirm-text {
+      font-size: 13px;
+      color: var(--muted);
+      margin-right: auto;
+    }
+
+    /* Add fact bar */
+    .add-fact-bar {
+      display: flex;
+      gap: 8px;
+      padding: 12px 24px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .add-fact-bar input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .add-fact-bar input:focus { border-color: var(--primary); }
+    .add-fact-bar input::placeholder { color: var(--muted); }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-dim); border-color: var(--primary-dim); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { background: var(--border); }
+    .btn-ghost {
+      background: none;
+      color: var(--muted);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--surface2); }
+    .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+    /* ── Markdown ───────────────────────────────────────────────── */
+    .markdown-render h1 { font-size: 20px; margin-bottom: 12px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .markdown-render h2 { font-size: 16px; margin: 20px 0 8px; color: var(--text); }
+    .markdown-render h3 { font-size: 14px; margin: 16px 0 6px; color: var(--text); }
+    .markdown-render p { margin-bottom: 12px; color: var(--text); }
+    .markdown-render ul, .markdown-render ol { margin: 8px 0 12px 20px; }
+    .markdown-render li { margin-bottom: 4px; color: var(--text); }
+    .markdown-render code {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 12px;
+      color: #c8b0ff;
+    }
+    .markdown-render pre {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      overflow-x: auto;
+      margin: 12px 0;
+    }
+    .markdown-render pre code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: #c8b0ff;
+    }
+    .markdown-render blockquote {
+      border-left: 3px solid var(--primary);
+      padding-left: 12px;
+      margin: 12px 0;
+      color: var(--muted);
+    }
+    .markdown-render strong { color: #fff; }
+    .markdown-render a { color: var(--primary); text-decoration: none; }
+    .markdown-render a:hover { text-decoration: underline; }
+    .markdown-render hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .markdown-render table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+    .markdown-render th, .markdown-render td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .markdown-render th { background: var(--surface2); font-weight: 600; }
+
+    /* ── Incidents layout ───────────────────────────────────────── */
+    .incidents-layout {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      position: relative;
+    }
+
+    .incidents-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .incidents-toolbar input[type="search"] {
+      flex: 1;
+      min-width: 200px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      padding: 8px 12px 8px 32px;
+      outline: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23808098' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: 10px center;
+      transition: border-color 0.15s;
+    }
+    .incidents-toolbar input[type="search"]:focus { border-color: var(--primary); }
+    .incidents-toolbar input[type="search"]::placeholder { color: var(--muted); }
+    .incidents-toolbar select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      padding: 8px 28px 8px 10px;
+      outline: none;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23808098' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      transition: border-color 0.15s;
+    }
+    .incidents-toolbar select:focus { border-color: var(--primary); }
+
+    /* Table */
+    .incidents-table-wrap {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .incidents-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .incidents-table thead {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .incidents-table th {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: left;
+      white-space: nowrap;
+    }
+    .incidents-table td {
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .incidents-table tbody tr {
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .incidents-table tbody tr:hover { background: var(--surface2); }
+    .incidents-table tbody tr.selected { background: rgba(124, 111, 247, 0.1); }
+
+    .inc-title {
+      font-weight: 500;
+      color: var(--text);
+      max-width: 340px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .inc-source {
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+    .inc-date { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .inc-dur  { font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .inc-steps { font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* Severity badge */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge-critical { background: rgba(224, 85, 85, 0.18); color: #e05555; border: 1px solid rgba(224, 85, 85, 0.3); }
+    .badge-warning  { background: rgba(240, 160, 80, 0.18); color: #f0a050; border: 1px solid rgba(240, 160, 80, 0.3); }
+    .badge-info     { background: rgba(80, 144, 224, 0.18); color: #5090e0; border: 1px solid rgba(80, 144, 224, 0.3); }
+    .badge-unknown  { background: rgba(128, 128, 152, 0.18); color: #808098; border: 1px solid rgba(128, 128, 152, 0.3); }
+
+    /* Load more */
+    .load-more-bar {
+      display: flex;
+      justify-content: center;
+      padding: 16px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+
+    /* Empty / error states */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px 24px;
+      color: var(--muted);
+      gap: 10px;
+    }
+    .empty-state .empty-icon { font-size: 36px; opacity: 0.4; }
+    .empty-state .empty-msg  { font-size: 14px; }
+    .empty-state .empty-sub  { font-size: 12px; opacity: 0.7; }
+
+    .error-bar {
+      background: rgba(224, 85, 85, 0.12);
+      border: 1px solid rgba(224, 85, 85, 0.3);
+      border-radius: var(--radius);
+      color: #e07070;
+      padding: 10px 14px;
+      font-size: 13px;
+      margin: 12px 24px;
+    }
+
+    /* ── Incident drawer ────────────────────────────────────────── */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 200;
+    }
+    .drawer-overlay.open { display: block; }
+    .drawer {
+      position: fixed;
+      top: 0; right: -680px; bottom: 0;
+      width: min(680px, 100vw);
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      transition: right 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      z-index: 201;
+    }
+    .drawer.open { right: 0; }
+
+    .drawer-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .drawer-title {
+      flex: 1;
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.4;
+      color: var(--text);
+    }
+    .drawer-close {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 20px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      transition: color 0.15s, background 0.15s;
+    }
+    .drawer-close:hover { color: var(--text); background: var(--surface2); }
+
+    .drawer-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .meta-chip {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 8px;
+    }
+    .meta-chip .chip-label { font-weight: 600; color: var(--text); }
+
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+    }
+
+    .drawer-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 120px;
+      color: var(--muted);
+    }
+
+    /* ── Spinner ────────────────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+    }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      .sidebar { width: 160px; min-width: 160px; }
+      .incidents-toolbar { gap: 6px; }
+      .incidents-table th:nth-child(3),
+      .incidents-table td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navbar ─────────────────────────────────────────────────────────── -->
+<nav class="navbar">
+  <div class="navbar-logo">⚡ VISHWAKARMA</div>
+  <div class="navbar-tabs">
+    <button class="tab-btn active" id="tab-learnings" onclick="switchTab('learnings')">Learnings</button>
+    <button class="tab-btn" id="tab-incidents" onclick="switchTab('incidents')">Incidents</button>
+  </div>
+</nav>
+
+<!-- ── App ────────────────────────────────────────────────────────────── -->
+<div class="app">
+
+  <!-- Learnings tab -->
+  <div class="tab-content active" id="content-learnings">
+    <div class="learnings-layout">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-header">Categories</div>
+        <div id="cat-list">
+          <!-- populated by loadCategories() -->
+        </div>
+        <button class="new-cat-btn" id="new-cat-btn" onclick="showNewCatForm()">+ New Category</button>
+        <div class="new-cat-form" id="new-cat-form">
+          <input
+            type="text"
+            id="new-cat-input"
+            placeholder="e.g. payment, juspay, gtfs"
+            maxlength="64"
+            onkeydown="if(event.key==='Enter') createCategory(); if(event.key==='Escape') hideNewCatForm()"
+          />
+          <div class="new-cat-hint">Lowercase letters, digits, hyphens, underscores</div>
+          <div class="new-cat-form-actions">
+            <button class="btn btn-primary btn-sm" id="create-cat-btn" onclick="createCategory()">Create</button>
+            <button class="btn btn-ghost btn-sm" onclick="hideNewCatForm()">Cancel</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main panel -->
+      <div class="learn-main">
+        <div class="learn-header">
+          <h2 id="learn-title"><span class="cat-dot"></span> <span id="learn-title-text">—</span></h2>
+          <button class="btn btn-ghost btn-sm" id="edit-btn" onclick="enterEditMode()">Edit</button>
+        </div>
+
+        <div class="learn-body" id="learn-body">
+          <div class="empty-state">
+            <div class="empty-icon">📖</div>
+            <div class="empty-msg">Select a category to view learnings</div>
+          </div>
+        </div>
+
+        <div class="edit-actions" id="edit-actions">
+          <span class="edit-confirm-text" id="edit-confirm-text"></span>
+          <button class="btn btn-ghost btn-sm" onclick="cancelEdit()">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveEdit()">Save</button>
+        </div>
+
+        <div class="add-fact-bar" id="add-fact-bar">
+          <input
+            type="text"
+            id="fact-input"
+            placeholder="Add a new learned fact…"
+            onkeydown="if(event.key==='Enter') addFact()"
+          />
+          <button class="btn btn-primary btn-sm" onclick="addFact()">Add</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Incidents tab -->
+  <div class="tab-content" id="content-incidents">
+    <div class="incidents-layout">
+
+      <div class="incidents-toolbar">
+        <input
+          type="search"
+          id="inc-search"
+          placeholder="Search incidents…"
+          oninput="debouncedSearch()"
+        />
+        <select id="inc-source" onchange="loadIncidents(true)">
+          <option value="">All Sources</option>
+          <option value="alertmanager">AlertManager</option>
+          <option value="slack">Slack</option>
+        </select>
+        <select id="inc-status" onchange="loadIncidents(true)">
+          <option value="">All Status</option>
+          <option value="open">Open</option>
+          <option value="resolved">Resolved</option>
+        </select>
+      </div>
+
+      <div id="inc-error" style="display:none"></div>
+
+      <div class="incidents-table-wrap" id="inc-table-wrap">
+        <div class="empty-state" id="inc-empty" style="display:none">
+          <div class="empty-icon">🔍</div>
+          <div class="empty-msg">No incidents found</div>
+          <div class="empty-sub">Try adjusting your filters</div>
+        </div>
+        <table class="incidents-table" id="inc-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Date / Time</th>
+              <th>Alert Title</th>
+              <th>Source</th>
+              <th>Severity</th>
+              <th>Duration</th>
+              <th>Steps</th>
+            </tr>
+          </thead>
+          <tbody id="inc-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="load-more-bar" id="load-more-bar" style="display:none">
+        <button class="btn btn-secondary btn-sm" onclick="loadIncidents(false)">Load more</button>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Drawer overlay ─────────────────────────────────────────────────── -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<aside class="drawer" id="inc-drawer">
+  <div class="drawer-header">
+    <div class="drawer-title" id="drawer-title">—</div>
+    <button class="drawer-close" onclick="closeDrawer()">×</button>
+  </div>
+  <div class="drawer-meta" id="drawer-meta"></div>
+  <div class="drawer-body" id="drawer-body">
+    <div class="drawer-loading"><span class="spinner"></span></div>
+  </div>
+</aside>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let _activeCategory = null;
+let _editOriginal   = null;
+let _incOffset      = 0;
+let _incLimit       = 50;
+let _incHasMore     = false;
+let _searchTimer    = null;
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('content-' + name).classList.add('active');
+  if (name === 'incidents' && _incOffset === 0) loadIncidents(true);
+}
+
+// ── Learnings ─────────────────────────────────────────────────────────────────
+
+async function loadCategories() {
+  try {
+    const res = await fetch('/api/learnings');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderSidebar(data.categories || []);
+    if (data.categories && data.categories.length > 0) {
+      selectCategory(data.categories[0].category);
+    }
+  } catch (err) {
+    const list = document.getElementById('cat-list');
+    list.innerHTML = `<div style="padding:12px 16px;color:var(--danger);font-size:12px">Failed to load: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function renderSidebar(categories) {
+  const list = document.getElementById('cat-list');
+  list.innerHTML = '';
+  categories.forEach(cat => {
+    const el = document.createElement('div');
+    el.className = 'cat-item';
+    el.id = 'cat-' + cat.category;
+    el.onclick = () => selectCategory(cat.category);
+    el.innerHTML = `
+      <span class="cat-name">${escHtml(cat.category)}</span>
+      <span class="cat-badge" id="badge-${escHtml(cat.category)}">${cat.fact_count}</span>
+    `;
+    list.appendChild(el);
+  });
+}
+
+async function selectCategory(cat) {
+  // Cancel edit mode if open
+  if (_editOriginal !== null) cancelEdit();
+
+  // Update sidebar highlight
+  document.querySelectorAll('.cat-item').forEach(el => el.classList.remove('active'));
+  const catEl = document.getElementById('cat-' + cat);
+  if (catEl) catEl.classList.add('active');
+
+  _activeCategory = cat;
+  document.getElementById('learn-title-text').textContent = cat;
+  document.getElementById('edit-btn').style.display = '';
+  document.getElementById('add-fact-bar').style.display = '';
+
+  const body = document.getElementById('learn-body');
+  body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;color:var(--muted);padding:24px"><span class="spinner"></span> Loading…</div>';
+
+  try {
+    const res = await fetch(`/api/learnings/${encodeURIComponent(cat)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderLearnBody(data.content || '');
+  } catch (err) {
+    body.innerHTML = `<div class="error-bar">Failed to load learnings: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function renderLearnBody(markdown) {
+  const body = document.getElementById('learn-body');
+  const div = document.createElement('div');
+  div.className = 'markdown-render';
+  div.innerHTML = renderMarkdown(markdown);
+  body.innerHTML = '';
+  body.appendChild(div);
+}
+
+function enterEditMode() {
+  const body = document.getElementById('learn-body');
+  const current = body.querySelector('.markdown-render');
+  // Store original content by re-fetching is cleaner, but we can also keep it via state
+  // We'll fetch fresh to ensure accuracy
+  _fetchAndOpenEditor();
+}
+
+async function _fetchAndOpenEditor() {
+  if (!_activeCategory) return;
+  try {
+    const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _editOriginal = data.content || '';
+
+    const body = document.getElementById('learn-body');
+    body.innerHTML = '';
+    const ta = document.createElement('textarea');
+    ta.className = 'learn-textarea';
+    ta.id = 'learn-edit-ta';
+    ta.value = _editOriginal;
+    body.appendChild(ta);
+    ta.focus();
+
+    document.getElementById('edit-btn').style.display = 'none';
+    document.getElementById('add-fact-bar').style.display = 'none';
+    const actions = document.getElementById('edit-actions');
+    actions.classList.add('visible');
+    document.getElementById('edit-confirm-text').textContent =
+      `Save changes to ${_activeCategory} learnings?`;
+  } catch (err) {
+    showBodyError(`Failed to open editor: ${err.message}`);
+  }
+}
+
+function cancelEdit() {
+  _editOriginal = null;
+  document.getElementById('edit-btn').style.display = '';
+  document.getElementById('add-fact-bar').style.display = '';
+  document.getElementById('edit-actions').classList.remove('visible');
+  // Re-render the stored content
+  if (_activeCategory) selectCategory(_activeCategory);
+}
+
+async function saveEdit() {
+  if (!_activeCategory) return;
+  const ta = document.getElementById('learn-edit-ta');
+  if (!ta) return;
+  const content = ta.value;
+
+  const saveBtn = document.querySelector('#edit-actions .btn-primary');
+  saveBtn.disabled = true;
+  saveBtn.textContent = 'Saving…';
+
+  try {
+    const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _editOriginal = null;
+    document.getElementById('edit-btn').style.display = '';
+    document.getElementById('add-fact-bar').style.display = '';
+    document.getElementById('edit-actions').classList.remove('visible');
+    renderLearnBody(content);
+    await refreshCategoryBadge(_activeCategory);
+  } catch (err) {
+    showBodyError(`Save failed: ${err.message}`);
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save';
+  }
+}
+
+async function addFact() {
+  if (!_activeCategory) return;
+  const input = document.getElementById('fact-input');
+  const fact = (input.value || '').trim();
+  if (!fact) return;
+
+  const addBtn = input.nextElementSibling;
+  addBtn.disabled = true;
+  addBtn.textContent = '…';
+
+  try {
+    const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}/append`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fact }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    input.value = '';
+    await selectCategory(_activeCategory);
+    await refreshCategoryBadge(_activeCategory);
+  } catch (err) {
+    showBodyError(`Failed to add fact: ${err.message}`);
+  } finally {
+    addBtn.disabled = false;
+    addBtn.textContent = 'Add';
+  }
+}
+
+function showNewCatForm() {
+  document.getElementById('new-cat-btn').style.display = 'none';
+  const form = document.getElementById('new-cat-form');
+  form.classList.add('visible');
+  document.getElementById('new-cat-input').focus();
+}
+
+function hideNewCatForm() {
+  document.getElementById('new-cat-btn').style.display = '';
+  document.getElementById('new-cat-form').classList.remove('visible');
+  document.getElementById('new-cat-input').value = '';
+}
+
+async function createCategory() {
+  const input = document.getElementById('new-cat-input');
+  const name = input.value.trim().toLowerCase();
+  if (!name) return;
+
+  const btn = document.getElementById('create-cat-btn');
+  btn.disabled = true;
+  btn.textContent = '…';
+
+  try {
+    const res = await fetch(`/api/learnings/${encodeURIComponent(name)}`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    hideNewCatForm();
+    // Reload sidebar and switch to new category
+    const listRes = await fetch('/api/learnings');
+    if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
+    const data = await listRes.json();
+    renderSidebar(data.categories || []);
+    selectCategory(name);
+  } catch (err) {
+    const hint = document.querySelector('.new-cat-hint');
+    hint.style.color = 'var(--danger)';
+    hint.textContent = err.message;
+    setTimeout(() => {
+      hint.style.color = '';
+      hint.textContent = 'Lowercase letters, digits, hyphens, underscores';
+    }, 3000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create';
+  }
+}
+
+async function refreshCategoryBadge(cat) {
+  try {
+    const res = await fetch('/api/learnings');
+    if (!res.ok) return;
+    const data = await res.json();
+    (data.categories || []).forEach(c => {
+      const badge = document.getElementById('badge-' + c.category);
+      if (badge) badge.textContent = c.fact_count;
+    });
+  } catch (_) {}
+}
+
+function showBodyError(msg) {
+  const body = document.getElementById('learn-body');
+  const div = document.createElement('div');
+  div.className = 'error-bar';
+  div.textContent = msg;
+  body.prepend(div);
+}
+
+// ── Incidents ─────────────────────────────────────────────────────────────────
+
+function debouncedSearch() {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => loadIncidents(true), 300);
+}
+
+async function loadIncidents(reset = true) {
+  if (reset) {
+    _incOffset = 0;
+    document.getElementById('inc-tbody').innerHTML = '';
+    document.getElementById('inc-table').style.display = 'none';
+    document.getElementById('inc-empty').style.display = 'none';
+  }
+
+  const search = document.getElementById('inc-search').value.trim();
+  const source = document.getElementById('inc-source').value;
+  const status = document.getElementById('inc-status').value;
+
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  if (status) params.set('status', status);
+  if (search) params.set('search', search);
+  params.set('limit', String(_incLimit));
+  params.set('offset', String(_incOffset));
+
+  const errorEl = document.getElementById('inc-error');
+  errorEl.style.display = 'none';
+  errorEl.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/incidents?' + params.toString());
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const incidents = data.incidents || [];
+
+    if (reset && incidents.length === 0) {
+      document.getElementById('inc-empty').style.display = 'flex';
+      document.getElementById('inc-table').style.display = 'none';
+      document.getElementById('load-more-bar').style.display = 'none';
+      return;
+    }
+
+    renderIncidentRows(incidents);
+    _incOffset += incidents.length;
+    _incHasMore = incidents.length === _incLimit;
+    document.getElementById('inc-table').style.display = '';
+    document.getElementById('load-more-bar').style.display = _incHasMore ? '' : 'none';
+  } catch (err) {
+    errorEl.innerHTML = `<div class="error-bar">Failed to load incidents: ${escHtml(err.message)}</div>`;
+    errorEl.style.display = 'block';
+  }
+}
+
+function renderIncidentRows(incidents) {
+  const tbody = document.getElementById('inc-tbody');
+  incidents.forEach(inc => {
+    const tr = document.createElement('tr');
+    tr.dataset.id = inc.id;
+    tr.onclick = () => viewIncident(inc.id);
+
+    const sev = (inc.severity || 'unknown').toLowerCase();
+    const badgeClass = sev === 'critical' ? 'badge-critical'
+                     : sev === 'warning'  ? 'badge-warning'
+                     : sev === 'info'     ? 'badge-info'
+                     : 'badge-unknown';
+
+    const meta = inc.meta || {};
+    const duration = meta.duration_seconds != null ? formatDuration(meta.duration_seconds) : '—';
+    const steps    = meta.steps             != null ? meta.steps                            : '—';
+
+    tr.innerHTML = `
+      <td class="inc-date">${formatDate(inc.created_at)}</td>
+      <td><div class="inc-title" title="${escHtml(inc.title || '')}">${escHtml(inc.title || '—')}</div></td>
+      <td><span class="inc-source">${escHtml(inc.source || '—')}</span></td>
+      <td><span class="badge ${badgeClass}">${escHtml(inc.severity || 'unknown')}</span></td>
+      <td class="inc-dur">${escHtml(duration)}</td>
+      <td class="inc-steps">${escHtml(String(steps))}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function viewIncident(id) {
+  // Highlight row
+  document.querySelectorAll('#inc-tbody tr').forEach(r => {
+    r.classList.toggle('selected', r.dataset.id === String(id));
+  });
+
+  const overlay = document.getElementById('drawer-overlay');
+  const drawer  = document.getElementById('inc-drawer');
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+
+  document.getElementById('drawer-title').textContent = '…';
+  document.getElementById('drawer-meta').innerHTML = '';
+  document.getElementById('drawer-body').innerHTML =
+    '<div class="drawer-loading"><span class="spinner"></span></div>';
+
+  try {
+    const res = await fetch(`/api/incidents/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const inc = await res.json();
+    renderDrawer(inc);
+  } catch (err) {
+    document.getElementById('drawer-title').textContent = 'Error';
+    document.getElementById('drawer-body').innerHTML =
+      `<div class="error-bar">Failed to load incident: ${escHtml(err.message)}</div>`;
+  }
+}
+
+function renderDrawer(inc) {
+  document.getElementById('drawer-title').textContent = inc.title || '(no title)';
+
+  const meta   = inc.meta || {};
+  const sev    = (inc.severity || 'unknown').toLowerCase();
+  const badgeClass = sev === 'critical' ? 'badge-critical'
+                   : sev === 'warning'  ? 'badge-warning'
+                   : sev === 'info'     ? 'badge-info'
+                   : 'badge-unknown';
+  const duration = meta.duration_seconds != null ? formatDuration(meta.duration_seconds) : '—';
+  const steps    = meta.steps             != null ? meta.steps                            : '—';
+
+  document.getElementById('drawer-meta').innerHTML = `
+    <span class="meta-chip"><span class="chip-label">Source</span> ${escHtml(inc.source || '—')}</span>
+    <span class="meta-chip"><span class="badge ${badgeClass}">${escHtml(inc.severity || 'unknown')}</span></span>
+    <span class="meta-chip"><span class="chip-label">Date</span> ${formatDate(inc.created_at)}</span>
+    <span class="meta-chip"><span class="chip-label">Steps</span> ${escHtml(String(steps))}</span>
+    <span class="meta-chip"><span class="chip-label">Duration</span> ${escHtml(duration)}</span>
+  `;
+
+  const body = document.getElementById('drawer-body');
+  const analysis = inc.analysis || '_No analysis available._';
+  const div = document.createElement('div');
+  div.className = 'markdown-render';
+  div.innerHTML = renderMarkdown(analysis);
+  body.innerHTML = '';
+  body.appendChild(div);
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.getElementById('inc-drawer').classList.remove('open');
+  document.querySelectorAll('#inc-tbody tr').forEach(r => r.classList.remove('selected'));
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  try {
+    return marked.parse(text);
+  } catch (_) {
+    return `<pre>${escHtml(text)}</pre>`;
+  }
+}
+
+function formatDate(ts) {
+  if (!ts) return '—';
+  try {
+    let d;
+    // ISO string or unix timestamp
+    if (typeof ts === 'number') {
+      d = new Date(ts * 1000);
+    } else {
+      d = new Date(ts);
+    }
+    if (isNaN(d.getTime())) return String(ts);
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const mon  = months[d.getMonth()];
+    const day  = d.getDate();
+    const hh   = String(d.getHours()).padStart(2, '0');
+    const mm   = String(d.getMinutes()).padStart(2, '0');
+    return `${mon} ${day}, ${hh}:${mm}`;
+  } catch (_) {
+    return String(ts);
+  }
+}
+
+function formatDuration(secs) {
+  if (secs == null || isNaN(secs)) return '—';
+  const s = Math.round(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadCategories();
+});
+</script>
+</body>
+</html>

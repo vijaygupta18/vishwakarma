@@ -85,10 +85,15 @@ def create_app(config=None) -> FastAPI:
     # Initialize toolset manager and storage once at startup
     _state: dict[str, Any] = {}
 
+    from vishwakarma.ui.routes import create_ui_router
+    app.include_router(create_ui_router(_state))
+
     @app.on_event("startup")
     async def startup():
         from vishwakarma.storage.db import init_db
         init_db(config.db_path)
+        from vishwakarma.core.learnings import LearningsManager
+        _state["learnings"] = LearningsManager()
         _state["toolset_manager"] = config.make_toolset_manager()
         _state["toolset_manager"].check_all()
         log.info("Vishwakarma server ready")
@@ -245,9 +250,13 @@ def create_app(config=None) -> FastAPI:
     async def list_incidents(
         source: str | None = None,
         status: str | None = None,
+        search: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ):
+        if search:
+            from vishwakarma.storage.queries import search_incidents
+            return {"incidents": search_incidents(search, limit=limit)}
         from vishwakarma.storage.queries import list_incidents as _list
         return {"incidents": _list(source=source, status=status, limit=limit, offset=offset)}
 
@@ -327,6 +336,12 @@ async def _do_investigation(config, state, issue, incident_id: str, fingerprint:
 
         # Merge all pre-investigation context into extra_system_prompt
         extra_parts = [p for p in [entities_ctx, prefetch_ctx, prior_ctx] if p]
+        extra_parts.append(
+            "## Learned Knowledge\n"
+            "Use `learnings_list` to see available learned knowledge categories, "
+            "then `learnings_read(category)` to load the ones relevant to this alert. "
+            "Do this early in your investigation."
+        )
         extra_system_prompt = "\n\n".join(extra_parts) or None
 
         result = await loop.run_in_executor(
