@@ -176,11 +176,17 @@ spec:
             limits:
               cpu: 1000m
               memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 5050
+            failureThreshold: 12
+            periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: 5050
-            initialDelaySeconds: 10
+            initialDelaySeconds: 0
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 5
@@ -188,7 +194,7 @@ spec:
             httpGet:
               path: /readyz
               port: 5050
-            initialDelaySeconds: 5
+            initialDelaySeconds: 0
             periodSeconds: 10
             timeoutSeconds: 5
       volumes:
