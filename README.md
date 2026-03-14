@@ -322,6 +322,7 @@ Alert name: "RDS_HighCPU_atlas-customer-r1"
 | `🎫 servicenow_tables` | ServiceNow incidents and CMDB records. |
 | `🔗 mcp` | Model Context Protocol — plug in any MCP-compatible tool server. |
 | `✅ todo` | Internal task planner — agent writes a plan before touching any tool. |
+| `📚 learnings` | Read/list accumulated incident knowledge. Agent calls `learnings_list` then `learnings_read(category)` at the start of every investigation to load relevant facts. |
 
 ### 🚦 Tool Routing Rules
 
@@ -341,6 +342,8 @@ Alert name: "RDS_HighCPU_atlas-customer-r1"
 | 🗺️ **Runbook routing** | Per-alert runbooks matched by keyword, then LLM classification fallback |
 | ⚡ **Pre-enrichment** | K8s pod status, warning events, prior incidents, and entity extraction — all in parallel *before* the loop starts |
 | 📚 **Site knowledge base** | `/data/knowledge.md` on PVC, injected into every investigation — edit without rebuilding the image |
+| 🧠 **Learnings system** | Accumulated incident knowledge organized by category (rds, redis, drainer…). Agent reads relevant categories at investigation start via `learnings_list` + `learnings_read` tools. Teach it new facts via `@oogway learn <category> <fact>`. |
+| 🖥️ **Web UI** | Built-in dashboard at `/ui` — browse incidents, view investigation tool traces, manage learnings per category |
 | 🔁 **Incident history** | SQLite stores every investigation; prior findings for recurring alerts are injected as context |
 | 🚀 **Parallel tools** | Up to 16 tools run simultaneously per step |
 | 🛑 **Step-20 checkpoint** | Forces LLM to evaluate evidence and write RCA or declare what's still missing |
@@ -397,11 +400,16 @@ toolsets:
 
 ### 3️⃣ Runbooks
 
-Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes exactly how to investigate a specific alert type.
+Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each one tells the agent exactly how to investigate a specific alert type — which metrics to query, which logs to check, how to pivot between symptoms.
+
+**Two layers:**
+
+- **`aws/` and other generic runbooks** — infrastructure runbooks that work for any cluster. They use `<placeholder>` values and reference the Site Knowledge Base for cluster-specific details (instance IDs, metric names, namespaces). These ship with Vishwakarma.
+- **`custom/` runbooks** — your cluster-specific investigation workflows. Write one per alert group for your own services. The `ny-*.md` files are an example for NammaYatri's setup — replace or extend them for your own stack.
 
 **Adding a runbook:**
 
-1. Create `vishwakarma/plugins/runbooks/<category>/<alert-name>.md`
+1. Create `vishwakarma/plugins/runbooks/custom/<alert-name>.md` with step-by-step investigation instructions
 2. Register in `plugins/agents/agents.json`:
 
 ```json
@@ -409,9 +417,14 @@ Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes exac
   "id": "my-alert-investigation",
   "description": "Investigate MyAlert — what it means and how to diagnose",
   "keywords": ["myalert", "keyword2"],
-  "runbook": "../runbooks/<category>/<alert-name>.md"
+  "runbook": "../runbooks/custom/<alert-name>.md"
 }
 ```
+
+**Runbook design tips:**
+- Use `<placeholder>` for anything cluster-specific (namespaces, service names, instance IDs) and tell the agent to "use the value from the Site Knowledge Base"
+- Put the actual values in `knowledge.md` — not in the runbook
+- Put patterns discovered from real incidents in Learnings — not in the runbook
 
 **Included runbooks:**
 
@@ -420,9 +433,9 @@ Runbooks are `.md` files in `vishwakarma/plugins/runbooks/`. Each describes exac
 | `☁️ aws/rds-investigation.md` | RDS high CPU, connections, slow queries via Performance Insights |
 | `☁️ aws/redis-investigation.md` | ElastiCache high CPU, evictions, connection storms |
 | `☁️ aws/alb-5xx-investigation.md` | ALB 5xx — Istio logs → app logs → dependency pivot |
-| `🛺 custom/ny-system-alerts.md` | Drainer lag, login drops, producer failures, config errors |
-| `🛺 custom/ny-sre-sev2-alerts.md` | SEV2: 5xx errors, gateway failures, ride-to-search ratio |
-| `🛺 custom/ny-pt-alerts.md` | Public transit: CMRL/CRIS API failures, GTFS OOM, GRPC down |
+| `🛺 custom/ny-system-alerts.md` | *(Example)* Drainer lag, login drops, producer failures, config errors |
+| `🛺 custom/ny-sre-sev2-alerts.md` | *(Example)* SEV2: 5xx errors, gateway failures, ride-to-search ratio |
+| `🛺 custom/ny-pt-alerts.md` | *(Example)* Public transit: CMRL/CRIS API failures, GTFS OOM, GRPC down |
 
 ### 4️⃣ Site Knowledge Base
 
@@ -459,7 +472,38 @@ kubectl cp ./knowledge.md <namespace>/<pod>:/data/knowledge.md
 kubectl rollout restart deployment/vishwakarma -n <namespace>
 ```
 
-### 5️⃣ Deploy to Kubernetes
+### 5️⃣ Learnings
+
+Learnings are facts your team accumulates from real incidents — patterns, gotchas, and context that aren't obvious from infrastructure topology alone.
+
+**Three layers of knowledge:**
+
+| Layer | What goes here | Where |
+|-------|---------------|-------|
+| **Site Knowledge Base** | Static infra facts: instance IDs, namespaces, metric names, proven commands | `knowledge.md` on PVC |
+| **Runbooks** | How to investigate each alert type: which tools, which order, what to look for | `plugins/runbooks/` |
+| **Learnings** | What you've *learned* from incidents: quirks, patterns, past RCAs | `/data/learnings/*.md` on PVC |
+
+**Teaching the bot via Slack:**
+```
+@oogway learn rds Atlas customer RDS CPU spikes always correlate with drainer batch inserts at :00 and :30
+@oogway learn redis lts-redis evictions spike during 6-9 PM IST peak - not an alert worth waking for
+@oogway forget rds <fact-keyword>
+```
+
+**Managing learnings via the UI:**
+
+Open `http://<vishwakarma>:5050/ui` → **Learnings** tab. Browse categories, edit facts, create new categories.
+
+**How the agent uses learnings:**
+
+At the start of every investigation the agent calls `learnings_list` to see available categories, then `learnings_read(category)` to load the ones relevant to the current alert. No pre-injection — the agent decides what's relevant.
+
+**Default categories:** `rds`, `redis`, `drainer`, `kubernetes`, `networking`, `general`. Add your own via the UI or `@oogway learn <new-category> <fact>`.
+
+---
+
+### 6️⃣ Deploy to Kubernetes
 
 ```bash
 # RBAC (ServiceAccount + ClusterRole)
@@ -553,6 +597,51 @@ lambda/
 
 ---
 
+## 🖥️ Accessing the Web UI
+
+The built-in dashboard lets you browse investigations, inspect tool traces, and manage learnings.
+
+**Port-forward from your machine:**
+```bash
+kubectl port-forward -n monitoring svc/vishwakarma 5050:5050
+```
+
+Then open: **http://localhost:5050/ui**
+
+Pages:
+- **Investigations** — list of all past RCAs, click to see full tool trace and analysis
+- **Learnings** — browse/edit facts by category, create new categories
+- **Toolsets** — health check for each enabled toolset
+
+---
+
+## 🤖 Slack Bot
+
+The bot ships with the **Oogway** persona — an SRE character used at NammaYatri. To use your own bot name and identity, edit `bot/slack.py` → `_simple_chat()` system prompt:
+
+```python
+"content": (
+    "You are <YourBotName>, an SRE at <YourCompany>. "
+    "If anyone asks who you are, say: 'I'm <YourBotName>.' "
+    "If anyone asks who made you, say: 'I was made by <your-name>.' "
+    "..."
+),
+```
+
+Also update the `@oogway` references in the help text (`_help_text()`) and the DM handler to match your Slack bot's user ID.
+
+**Slack commands:**
+```
+@yourbot <question>           — casual chat (no tools, fast reply)
+@yourbot debug <question>     — full investigation + PDF report
+@yourbot learn <category> <fact>  — teach the bot a new fact
+@yourbot forget <category> <keyword>  — remove a fact
+@yourbot status               — show incident stats
+@yourbot help                 — show help
+```
+
+---
+
 ## 🔧 Adapting for Your Cluster
 
 | What to change | Where |
@@ -565,5 +654,6 @@ lambda/
 | Bash allowlist | `config.yaml` → `toolsets.bash.config.allow` |
 | Investigation workflow for your alerts | `plugins/runbooks/<your-category>/` |
 | Alert → runbook routing | `plugins/agents/agents.json` |
-| Infra-specific context | `/data/knowledge.md` on PVC |
-| Slack bot identity + tone | `bot/slack.py` → `_simple_chat` system prompt |
+| Infra-specific context (instances, namespaces, metrics) | `/data/knowledge.md` on PVC |
+| Incident patterns and gotchas discovered over time | `/data/learnings/*.md` via `@oogway learn` or the UI |
+| Slack bot name + persona | `bot/slack.py` → `_simple_chat` system prompt (change "Oogway" to your own bot name/persona) |

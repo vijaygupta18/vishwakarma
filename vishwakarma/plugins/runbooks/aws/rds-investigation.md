@@ -155,7 +155,7 @@ A drop at `startsAt` vs baseline indicates DB issues are blocking ride allocatio
 
 ### 4b. 5xx Error Rate (are APIs failing?)
 Use `prometheus_query_range` tool with:
-- query: `sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) by (ingress)`
+- query: `sum by(service,handler)(rate(http_request_duration_seconds_count{handler!="/v1/",status_code=~"^5.."}[1m]))`
 - start: `<startsAt - 10m>`
 - end: `<startsAt + 1h>`
 - step: `1m`

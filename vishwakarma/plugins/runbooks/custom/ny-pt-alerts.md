@@ -82,6 +82,7 @@ Search the app log index (from knowledge base) for the alert window:
 Fires when gRPC-based push notifications (driver/rider app) drop to zero.
 
 ### Step 1: Check GRPC Service Pod Health
+Use the notification service namespace and pod name pattern from the Site Knowledge Base.
 ```
 kubectl get pods -n <namespace> | grep -iE "grpc|notif|push"
 kubectl describe pod -n <namespace> <grpc-pod-name>
@@ -140,19 +141,20 @@ kubectl top pods -n <namespace> | grep -iE "grpc|notif"
 GTFS In-Memory Server serves static transit data (routes, stops, schedules). 5xx means requests to it are failing.
 
 ### Step 1: Check GIMS Pod Health
+Use the GIMS namespace and pod name pattern from the Site Knowledge Base.
 ```
-kubectl get pods -n <namespace> | grep -iE "gtfs|gims|in-memory"
-kubectl describe pod -n <namespace> <gims-pod>
+kubectl get pods -n <gims-namespace> | grep -iE "gtfs|gims|in-memory"
+kubectl describe pod -n <gims-namespace> <gims-pod>
 ```
 
 ### Step 2: Check GIMS Logs
 ```
-timeout 30 stern -n <namespace> <gtfs-in-memory-service> --since 15m 2>/dev/null | grep -iE "error|5[0-9][0-9]|exception|memory|oom" | tail -50
+timeout 30 stern -n <gims-namespace> <gtfs-in-memory-service> --since 15m 2>/dev/null | grep -iE "error|5[0-9][0-9]|exception|memory|oom" | tail -50
 ```
 
 ### Step 3: Check Memory Usage (GIMS loads GTFS data in-memory)
 ```
-kubectl top pods -n <namespace> | grep -iE "gtfs|gims"
+kubectl top pods -n <gims-namespace> | grep -iE "gtfs|gims"
 ```
 
 ### Step 4: Search Elasticsearch for GIMS Errors

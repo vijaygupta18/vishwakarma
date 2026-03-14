@@ -1,19 +1,23 @@
 # Vishwakarma — Example Configuration
-# Copy to ~/.vishwakarma/config.yaml and fill in your values
+# Copy to config.yaml and fill in your values
 # All fields can also be set via environment variables (VK_ prefix)
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 llm:
-  model: openai/open-large           # Juspay AI
-  api_base: https://<llm-api-base>
-  api_key: sk-xxx                    # or set VK_API_KEY env var
+  model: openai/gpt-4o              # any OpenAI-compatible model
+  # model: openai/open-large        # Juspay AI example
+  api_base: https://<llm-api-base>  # omit for OpenAI default
+  api_key: sk-xxx                   # or set VK_API_KEY env var
+  fast_model: openai/gpt-4o-mini    # used for summarisation, chat, compaction
+  # fast_model: openai/open-fast    # Juspay AI example
   max_tokens: 65536
   temperature: 0.0
   timeout: 300
 
 # ── Cluster ───────────────────────────────────────────────────────────────────
-cluster_name: eks-kurukshetra        # shown in system prompt to LLM
-max_steps: 40                        # max investigation steps before giving up
+cluster_name: my-cluster            # shown to LLM in every investigation
+max_steps: 40                       # max agentic loop iterations
+dedup_window: 300                   # seconds — suppress duplicate alerts
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
@@ -22,31 +26,36 @@ server:
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:
-  db_path: /data/vishwakarma.db      # SQLite on PVC
+  db_path: /data/vishwakarma.db     # SQLite — incident history (on PVC)
 
-# ── Alert Deduplication ───────────────────────────────────────────────────────
-dedup_window: 300                    # seconds — ignore same alert within this window
+# ── Site Knowledge Base ────────────────────────────────────────────────────────
+# Injected into every investigation. Put cluster-specific facts here:
+# instance IDs, namespaces, metric names, proven commands, IAM gaps.
+# In Kubernetes: mounted from ConfigMap — edit without rebuilding image.
+knowledge_path: /etc/vishwakarma/knowledge.md
 
 # ── Slack Bot ─────────────────────────────────────────────────────────────────
-slack:
-  bot_token: xoxb-xxx                # or set SLACK_BOT_TOKEN env var
-  app_token: xapp-xxx                # or set SLACK_APP_TOKEN env var
-  signing_secret: xxx                # or set SLACK_SIGNING_SECRET env var
+# slack:
+#   bot_token: xoxb-xxx             # or set SLACK_BOT_TOKEN env var
+#   app_token: xapp-xxx             # or set SLACK_APP_TOKEN env var
+#   signing_secret: xxx             # or set SLACK_SIGNING_SECRET env var
 
 # ── Toolsets ──────────────────────────────────────────────────────────────────
 toolsets:
 
+  # Recommended: use bash + kubectl instead of kubernetes/kubernetes_logs
   kubernetes:
-    enabled: true
-    # No extra config — uses kubeconfig / in-cluster ServiceAccount
+    enabled: false
 
   kubernetes_logs:
-    enabled: true
+    enabled: false
 
   prometheus:
     enabled: true
     config:
-      url: http://victoria-metrics-single-server.monitoring.svc.cluster.local:8428
+      url: http://prometheus.monitoring.svc.cluster.local:9090
+      # For VictoriaMetrics:
+      # url: http://vmselect.monitoring.svc.cluster.local:8481/select/0/prometheus
       # bearer_token: xxx   # if auth required
 
   elasticsearch:
@@ -57,44 +66,46 @@ toolsets:
       # password: xxx
 
   grafana:
-    enabled: true
+    enabled: false
     config:
       url: http://grafana.monitoring.svc.cluster.local:3000
-      api_key: glsa_xxx              # Grafana Service Account token
+      api_key: glsa_xxx             # Grafana Service Account token
 
   bash:
     enabled: true
     config:
-      safe_mode: false               # true = only pre-approved commands
-      allow:                         # always allow these command prefixes
+      safe_mode: false              # true = only pre-approved commands
+      allow:                        # always allow these command prefixes
         - kubectl
         - aws
         - stern
-        - helm
-      block:                         # always block these command prefixes
+        - echo
+        - timeout
+        - grep
+        - head
+        - tail
+        - jq
+        - awk
+        - sort
+        - uniq
+        - cat
+        - date
+      block:                        # always block these command prefixes
         - rm
+        - curl
         - wget
-        - dd
+        - env
+        - printenv
+        - python
+        - pip
 
-  database:
+  learnings:
     enabled: true
-    config:
-      connections:
-        - name: rider_db_aws
-          type: postgresql
-          host: ${AWS_DB_HOST}       # from env
-          port: 5432
-          database: atlas_app_v2
-          username: readonly
-          password: ${AWS_DB_PASS}
+    # config:
+    #   path: /data/learnings       # default — on PVC, survives deploys
 
-        - name: driver_db_aws
-          type: postgresql
-          host: ${AWS_DB_HOST}
-          port: 5432
-          database: atlas_driver_offer_bpp_v2
-          username: readonly
-          password: ${AWS_DB_PASS}
+  todo:
+    enabled: true
 
   http:
     enabled: true
@@ -106,19 +117,14 @@ toolsets:
     config:
       timeout: 10
 
-  aws:
-    enabled: true
-    # Uses IAM role attached to K8s ServiceAccount (IRSA)
-    # Or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars
-
-# ── Runbooks ──────────────────────────────────────────────────────────────────
-# Optional text snippets included in every investigation prompt
-runbooks:
-  - "For payment failures, always check the rider-app and protocol-gateway pods first"
-  - "For high latency, start with VictoriaMetrics queries before checking logs"
-
-# ── Custom CA Certificate ─────────────────────────────────────────────────────
-# certificate: |
-#   -----BEGIN CERTIFICATE-----
-#   ...
-#   -----END CERTIFICATE-----
+  database:
+    enabled: false
+    config:
+      connections:
+        - name: app_db
+          type: postgresql
+          host: ${DB_HOST}          # from env
+          port: 5432
+          database: my_app_db
+          username: readonly
+          password: ${DB_PASS}

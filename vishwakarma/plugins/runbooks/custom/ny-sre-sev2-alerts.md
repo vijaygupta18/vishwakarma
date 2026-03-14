@@ -166,8 +166,9 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 ### Alert: RideToSearchRatioDown
 **Trigger:** Ratio of ride bookings to searches dropped significantly.
 
-1. Check current ratio in VictoriaMetrics — use ride-created and search-request counter metrics from the knowledge base:
-   `sum(rate({__name__=~".*ride.*total.*"}[5m]))` and `sum(rate({__name__=~".*search.*total.*"}[5m]))`
+1. Check current ratio in VictoriaMetrics:
+   `rate(ride_created_count[5m]) / rate(search_request_count[5m])`
+   Also check absolute volumes: `rate(ride_created_count[5m])` and `rate(search_request_count[5m])`
 
 2. Find search and booking service pods:
    `kubectl get pods -A | grep -iE "search|booking|alloc"`

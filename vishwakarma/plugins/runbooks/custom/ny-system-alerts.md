@@ -112,7 +112,7 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 **Step 1 — Confirm metric and pod state (run in parallel):**
 ```
-kubectl get pods -n atlas | grep -i drainer
+kubectl get pods -n <drainer-namespace> | grep -i drainer
 ```
 ```
 prometheus: driver_drainer_stop_status or drainer_stop_status
@@ -121,21 +121,21 @@ prometheus: driver_drainer_stop_status or drainer_stop_status
 **Step 2 — Determine which scenario applies and follow it:**
 
 #### Scenario A: Pods are DOWN (0 replicas)
-- `kubectl get deployment -n atlas | grep drainer` → AVAILABLE=0
-- `kubectl get events -n atlas --sort-by=.lastTimestamp | grep -i drainer | tail -20`
-- `kubectl describe pod -n atlas <last-drainer-pod> | grep -A5 "Last State\|OOMKilled\|Reason"`
+- `kubectl get deployment -n <drainer-namespace> | grep drainer` → AVAILABLE=0
+- `kubectl get events -n <drainer-namespace> --sort-by=.lastTimestamp | grep -i drainer | tail -20`
+- `kubectl describe pod -n <drainer-namespace> <last-drainer-pod> | grep -A5 "Last State\|OOMKilled\|Reason"`
 - **Root cause:** Node eviction, OOM kill, or manual scale-down
-- **Fix:** `kubectl scale deployment/<drainer> -n atlas --replicas=5`
+- **Fix:** `kubectl scale deployment/<drainer> -n <drainer-namespace> --replicas=5`
 
 #### Scenario B: Pods RUNNING + stop_status=1 → Query execution error (most likely)
 The drainer processes a queue of DB writes. A single bad record with a fatal SQL error causes the drainer to halt internally while the pod stays alive.
-- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "sqlState|BATCH_INSERT|integer out of range|constraint|deadlock|error|panic|ERROR" | head -100`
+- `kubectl logs -n <drainer-namespace> -l app=<drainer-label> --since=30m | grep -iE "sqlState|BATCH_INSERT|integer out of range|constraint|deadlock|error|panic|ERROR" | head -100`
 - Look for: `sqlState 22003` (integer overflow), `BATCH_INSERT_FAILED`, `constraint violation`
 - **Root cause:** Bad/corrupt record in drainer queue causing repeated SQL failures → drainer halts
-- **Fix:** `kubectl rollout restart deployment/<drainer> -n atlas` to clear stopped state, then fix the bad record or schema
+- **Fix:** `kubectl rollout restart deployment/<drainer> -n <drainer-namespace>` to clear stopped state, then fix the bad record or schema
 
 #### Scenario C: Pods RUNNING + stop_status=1 → DB connectivity issue
-- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "connection refused|too many connections|timeout|postgres" | head -100`
+- `kubectl logs -n <drainer-namespace> -l app=<drainer-label> --since=30m | grep -iE "connection refused|too many connections|timeout|postgres" | head -100`
 - Check RDS CPU + connections for driver RDS instances (atlas-driver-w3, driver-r1) via CloudWatch
 - **Root cause:** DB overloaded, connection pool exhausted, or RDS failover in progress
 - **Fix:** Resolve DB issue first, then restart drainer
