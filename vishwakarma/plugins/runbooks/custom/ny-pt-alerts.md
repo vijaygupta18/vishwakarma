@@ -97,7 +97,31 @@ kubectl get pods -n <namespace> --sort-by='.status.containerStatuses[0].restartC
 timeout 30 stern -n <namespace> <grpc-pod> --since 15m 2>/dev/null | grep -iE "error|exception|crash|panic|disconnect" | tail -50
 ```
 
-### Step 4: Check for Network/Istio Issues
+### Step 4: Search Elasticsearch for GRPC Errors
+Search the app log index (from knowledge base) for the alert window:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"bool": {
+          "should": [
+            {"match": {"message": "grpc"}},
+            {"match": {"message": "notification"}},
+            {"match": {"message": "ERROR"}}
+          ],
+          "minimum_should_match": 1
+        }}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
+```
+
+### Step 5: Check for Network/Istio Issues
 ```
 kubectl get events -n <namespace> | grep -iE "grpc|network|sidecar|istio" | tail -20
 kubectl top pods -n <namespace> | grep -iE "grpc|notif"
@@ -131,9 +155,28 @@ timeout 30 stern -n <namespace> <gtfs-in-memory-service> --since 15m 2>/dev/null
 kubectl top pods -n <namespace> | grep -iE "gtfs|gims"
 ```
 
-### Step 4: Check for GTFS Data Issues
-```
-kubectl logs -n <namespace> <gims-pod> --tail=100 | grep -iE "load|parse|gtfs|error"
+### Step 4: Search Elasticsearch for GIMS Errors
+Search the app log index (from knowledge base) for the alert window:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"bool": {
+          "should": [
+            {"match": {"message": "gtfs"}},
+            {"match": {"message": "gims"}},
+            {"match": {"message": "ERROR"}}
+          ],
+          "minimum_should_match": 1
+        }}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
 ```
 
 ### Synthesis
@@ -188,16 +231,15 @@ kubectl get events -n <namespace> | grep -iE "deploy\|rollout" | tail -20
 
 ---
 
-## Extended Investigation (if runbook steps did not find root cause)
+## If You Still Don't Have the Answer
 
-If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
-- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
-- Check services that this component depends on (upstream/downstream)
-- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
-- Check recent changes: deployments, config changes, scaling events in the last 2 hours
-- Query Elasticsearch for error patterns around the incident time
-- Check Prometheus for any other anomalous metrics correlated with the alert time
-- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+The steps above cover the most common scenarios. If root cause is still unclear — **use your own judgment**. You have full access to kubectl, Prometheus, Elasticsearch, and CloudWatch. Follow the evidence wherever it leads.
 
-The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+Good places to look:
+- What changed recently? `kubectl get events -A --sort-by='.lastTimestamp' | tail -30`
+- Is it one pod or all pods of that service?
+- Is it one service or cluster-wide?
+- Does the timing correlate with a deployment, traffic spike, or cron job?
+- Check upstream dependencies (DB, Redis, external APIs) even if logs don't explicitly mention them
+- Search ES broadly with just `ERROR` + the time window if targeted queries return nothing
 

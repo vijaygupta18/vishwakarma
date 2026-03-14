@@ -80,6 +80,23 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 2. Grep producer logs for errors:
    `timeout 30 stern -n <namespace> <producer-name-from-grep> --since 30m | grep -iE "error|exception|kafka|connect|timeout|panic|stop|fail" | head -200`
 
+3. Search the app log index (from knowledge base) for producer errors in the last 30 minutes:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"message": "producer"}},
+        {"match": {"message": "ERROR"}},
+        {"range": {"@timestamp": {"gte": "now-30m"}}}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
+```
+
 4. Check Prometheus metric to confirm silence:
    `sum(increase(producer_operation_duration_sum{operation="producer"}[10m]))`
 
@@ -112,7 +129,7 @@ prometheus: driver_drainer_stop_status or drainer_stop_status
 
 #### Scenario B: Pods RUNNING + stop_status=1 → Query execution error (most likely)
 The drainer processes a queue of DB writes. A single bad record with a fatal SQL error causes the drainer to halt internally while the pod stays alive.
-- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "sqlState|BATCH_INSERT|integer out of range|constraint|deadlock|error|panic" | head -100`
+- `kubectl logs -n atlas -l app=<drainer-label> --since=30m | grep -iE "sqlState|BATCH_INSERT|integer out of range|constraint|deadlock|error|panic|ERROR" | head -100`
 - Look for: `sqlState 22003` (integer overflow), `BATCH_INSERT_FAILED`, `constraint violation`
 - **Root cause:** Bad/corrupt record in drainer queue causing repeated SQL failures → drainer halts
 - **Fix:** `kubectl rollout restart deployment/<drainer> -n atlas` to clear stopped state, then fix the bad record or schema
@@ -195,6 +212,22 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 3. Grep logs for config errors:
    `timeout 30 stern -n <namespace> <service-name> --since 15m | grep -iE "config|parse|failed|error|invalid|syntax" | head -200`
 
+4. Search the app log index (from knowledge base) for config parse errors in the last 15 minutes:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"message": "system_configs_failed"}},
+        {"range": {"@timestamp": {"gte": "now-15m"}}}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
+```
+
 5. Check recent ConfigMap/Secret changes:
    `kubectl get events -A --sort-by='.lastTimestamp' | grep -iE "configmap|secret|updated" | tail -10`
 
@@ -213,6 +246,23 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 
 3. Grep pod logs for failure reason:
    `timeout 30 stern -n <namespace> <pod-name> --since 30m | grep -iE "error|exception|fail|panic|timeout" | head -200`
+
+4. Search the app log index (from knowledge base) for the job failure in the last 30 minutes:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"match": {"message": "<job-name-from-step-1>"}},
+        {"match": {"message": "ERROR"}},
+        {"range": {"@timestamp": {"gte": "now-30m"}}}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
+```
 
 5. Check job history:
    `kubectl get jobs -A | grep -i <job-name>`
@@ -321,16 +371,15 @@ Report: RDS CPU%, connection count, top queries.
 
 ---
 
-## Extended Investigation (if runbook steps did not find root cause)
+## If You Still Don't Have the Answer
 
-If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
-- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
-- Check services that this component depends on (upstream/downstream)
-- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
-- Check recent changes: deployments, config changes, scaling events in the last 2 hours
-- Query Elasticsearch for error patterns around the incident time
-- Check Prometheus for any other anomalous metrics correlated with the alert time
-- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+The steps above cover the most common scenarios. If root cause is still unclear — **use your own judgment**. You have full access to kubectl, Prometheus, Elasticsearch, and CloudWatch. Follow the evidence wherever it leads.
 
-The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+Good places to look:
+- What changed recently? `kubectl get events -A --sort-by='.lastTimestamp' | tail -30`
+- Is it one pod or all pods of that service?
+- Is it one service or cluster-wide?
+- Does the timing correlate with a deployment, traffic spike, or cron job?
+- Check upstream dependencies (DB, Redis, external APIs) even if logs don't explicitly mention them
+- Search ES broadly with just `ERROR` + the time window if targeted queries return nothing
 

@@ -136,6 +136,29 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 3. Grep logs for external gateway errors:
    `timeout 30 stern -n <namespace> <service-name> --since 30m | grep -iE "registry|gateway|5[0-9]{2}|error|timeout" | head -200`
 
+4. Search the app log index (from knowledge base) for external gateway errors in the last 30 minutes:
+```json
+{
+  "size": 20,
+  "query": {
+    "bool": {
+      "must": [
+        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"bool": {
+          "should": [
+            {"match": {"message": "registry"}},
+            {"match": {"message": "gateway"}},
+            {"match": {"message": "ERROR"}}
+          ],
+          "minimum_should_match": 1
+        }}
+      ]
+    }
+  },
+  "_source": ["message", "@timestamp"]
+}
+```
+
 **Possible root causes:** External provider outage, API version mismatch, bad credentials, network issue.
 
 ---
@@ -275,16 +298,15 @@ Application bug in that API. Report: handler name, exception type, first occurre
 
 ---
 
-## Extended Investigation (if runbook steps did not find root cause)
+## If You Still Don't Have the Answer
 
-If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
-- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
-- Check services that this component depends on (upstream/downstream)
-- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
-- Check recent changes: deployments, config changes, scaling events in the last 2 hours
-- Query Elasticsearch for error patterns around the incident time
-- Check Prometheus for any other anomalous metrics correlated with the alert time
-- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
+The steps above cover the most common scenarios. If root cause is still unclear — **use your own judgment**. You have full access to kubectl, Prometheus, Elasticsearch, and CloudWatch. Follow the evidence wherever it leads.
 
-The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
+Good places to look:
+- What changed recently? `kubectl get events -A --sort-by='.lastTimestamp' | tail -30`
+- Is it one pod or all pods of that service?
+- Is it one service or cluster-wide?
+- Does the timing correlate with a deployment, traffic spike, or cron job?
+- Check upstream dependencies (DB, Redis, external APIs) even if logs don't explicitly mention them
+- Search ES broadly with just `ERROR` + the time window if targeted queries return nothing
 
