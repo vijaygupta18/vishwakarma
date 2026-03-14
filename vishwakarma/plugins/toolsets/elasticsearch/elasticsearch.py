@@ -160,10 +160,24 @@ class ElasticsearchToolset(Toolset):
             if isinstance(raw, str):
                 try:
                     params = json.loads(raw)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"elasticsearch_search: failed to parse raw param as JSON: {e}. raw[:200]={raw[:200]}")
             elif isinstance(raw, dict):
                 params = raw
+        # Also handle: LLM put entire ES body (with nested "query") inside the "query" param
+        if "query" in params and isinstance(params["query"], dict) and "query" in params["query"]:
+            inner = params["query"]
+            params = {**params, "query": inner["query"]}
+            if "size" not in params and "size" in inner:
+                params["size"] = inner["size"]
+            if "_source" not in params and "_source" in inner:
+                params["_source"] = inner["_source"]
+        if "index" not in params:
+            return ToolOutput(
+                status=ToolStatus.ERROR,
+                error=f"Missing required parameter 'index'. Keys received: {list(params.keys())}. Call as: elasticsearch_search(index='logstash-*', query={{...}})",
+                invocation="elasticsearch_search(?)",
+            )
         index = params["index"]
         body: dict[str, Any] = {
             "query": params["query"],
@@ -175,6 +189,7 @@ class ElasticsearchToolset(Toolset):
             body["_source"] = params["_source"]
 
         invocation = f"elasticsearch_search({index}, {json.dumps(params['query'])[:100]})"
+        curl_fallback = f"curl -s -X GET '{self.url}/{index}/_search' -H 'Content-Type: application/json' -d '{json.dumps(body)}' | jq '.hits.hits[]._source'"
         try:
             r = self._session.post(
                 f"{self.url}/{index}/_search",
@@ -211,7 +226,11 @@ class ElasticsearchToolset(Toolset):
                 invocation=invocation,
             )
         except Exception as e:
-            return ToolOutput(status=ToolStatus.ERROR, error=str(e), invocation=invocation)
+            return ToolOutput(
+                status=ToolStatus.ERROR,
+                error=f"{e}\nFallback: use bash tool with: {curl_fallback}",
+                invocation=invocation,
+            )
 
     def _count(self, params: dict) -> ToolOutput:
         if "index" not in params and len(params) == 1:
@@ -219,13 +238,20 @@ class ElasticsearchToolset(Toolset):
             if isinstance(raw, str):
                 try:
                     params = json.loads(raw)
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.warning(f"elasticsearch_count: failed to parse raw param as JSON: {e}. raw[:200]={raw[:200]}")
             elif isinstance(raw, dict):
                 params = raw
+        if "index" not in params:
+            return ToolOutput(
+                status=ToolStatus.ERROR,
+                error=f"Missing required parameter 'index'. Keys received: {list(params.keys())}. Call as: elasticsearch_count(index='logstash-*', query={{...}})",
+                invocation="elasticsearch_count(?)",
+            )
         index = params["index"]
-        body = {"query": params["query"]}
+        body = {"query": params.get("query", {"match_all": {}})}
         invocation = f"elasticsearch_count({index})"
+        curl_fallback = f"curl -s -X GET '{self.url}/{index}/_count' -H 'Content-Type: application/json' -d '{json.dumps(body)}' | jq '.count'"
         try:
             r = self._session.post(f"{self.url}/{index}/_count", json=body, timeout=15)
             r.raise_for_status()
@@ -236,7 +262,11 @@ class ElasticsearchToolset(Toolset):
                 invocation=invocation,
             )
         except Exception as e:
-            return ToolOutput(status=ToolStatus.ERROR, error=str(e), invocation=invocation)
+            return ToolOutput(
+                status=ToolStatus.ERROR,
+                error=f"{e}\nFallback: use bash tool with: {curl_fallback}",
+                invocation=invocation,
+            )
 
     def _list_indices(self, params: dict) -> ToolOutput:
         pattern = params.get("pattern", "*")
