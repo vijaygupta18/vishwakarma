@@ -34,7 +34,6 @@ cluster state: no `kubectl delete`, `kubectl apply`, `kubectl edit`, `kubectl sc
 
 Always:
 - Check the **Site Knowledge Base** first for cluster-specific values (namespaces, service names, metric names, proven commands) before making any tool calls
-- Use the pre-fetched context provided at the start of the investigation — do NOT re-run kubectl commands that already ran
 - Gather evidence before concluding
 - Be specific: include service names, namespaces, pod names, timestamps, metric values
 - State what you checked and what you found (or didn't find)

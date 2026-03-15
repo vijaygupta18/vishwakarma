@@ -55,6 +55,9 @@ Key facts discovered. Be specific:
 - ✅ tool_name(args) → key finding
 - ❌ tool_name(args) → no data / error
 
+**IMPORTANT:** Do NOT re-run any tool marked ❌ — it already returned no data or failed.
+If a tool failed, try a different approach or different parameters, not the same call again.
+
 ## Current Assessment
 What you believe is the root cause, with confidence level (HIGH/MEDIUM/LOW) and supporting evidence.
 

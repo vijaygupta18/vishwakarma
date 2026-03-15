@@ -268,7 +268,9 @@ class InvestigationEngine:
                     content = self.llm.summarize(
                         f"You are helping investigate an infrastructure incident. "
                         f"Compress the following {tool_name} output to the 20 most relevant lines. "
-                        f"Keep error messages, timestamps, and anomalies. Remove repetitive healthy entries.\n\n"
+                        f"Preserve: error messages, stack traces, anomalous values, lines that differ from baseline, "
+                        f"the LAST 5 lines of the output (errors often appear at the end), and exact timestamps. "
+                        f"Remove: repetitive healthy/normal entries only.\n\n"
                         f"{content}"
                     )
                 return call_id, output, content
@@ -475,7 +477,9 @@ class InvestigationEngine:
                     content = self.llm.summarize(
                         f"You are helping investigate an infrastructure incident. "
                         f"Compress the following {tool_name} output to the 20 most relevant lines. "
-                        f"Keep error messages, timestamps, and anomalies. Remove repetitive healthy entries.\n\n"
+                        f"Preserve: error messages, stack traces, anomalous values, lines that differ from baseline, "
+                        f"the LAST 5 lines of the output (errors often appear at the end), and exact timestamps. "
+                        f"Remove: repetitive healthy/normal entries only.\n\n"
                         f"{content}"
                     )
                 return call_id, tool_name, output, content

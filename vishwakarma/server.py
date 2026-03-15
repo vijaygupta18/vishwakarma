@@ -316,6 +316,10 @@ async def _do_investigation(config, state, issue, incident_id: str, fingerprint:
     llm = config.make_llm()
     engine = config.make_engine(llm=llm, toolset_manager=tm)
 
+    # Scale investigation depth by alert severity
+    _severity_steps = {"critical": 60, "high": 50, "warning": 40, "medium": 40, "low": 25, "info": 20}
+    engine.max_steps = _severity_steps.get((issue.severity or "").lower(), config.max_steps)
+
     try:
         question = issue.question()
         alert_name = issue.labels.get("alertname") or issue.title
@@ -334,13 +338,16 @@ async def _do_investigation(config, state, issue, incident_id: str, fingerprint:
             prefetch_future, prior_future, entities_future, runbooks_future
         )
 
+        # Pre-inject learnings relevant to this alert (saves a learnings_list + learnings_read step)
+        learnings_mgr = state.get("learnings")
+        learnings_ctx = learnings_mgr.for_alert(alert_name) if learnings_mgr else ""
+
         # Merge all pre-investigation context into extra_system_prompt
-        extra_parts = [p for p in [entities_ctx, prefetch_ctx, prior_ctx] if p]
+        extra_parts = [p for p in [entities_ctx, prefetch_ctx, prior_ctx, learnings_ctx] if p]
         extra_parts.append(
             "## Learned Knowledge\n"
-            "Use `learnings_list` to see available learned knowledge categories, "
-            "then `learnings_read(category)` to load the ones relevant to this alert. "
-            "Do this early in your investigation."
+            "Relevant facts from past incidents are pre-injected above (if any). "
+            "Use `learnings_list` + `learnings_read` only if you need categories not shown above."
         )
         extra_system_prompt = "\n\n".join(extra_parts) or None
 
@@ -469,7 +476,7 @@ def _prefetch_alert_context(issue) -> str:
     if all("(no output)" in v or "(error" in v for v in results.values()):
         return ""
 
-    parts = ["## Pre-fetched Kubernetes Context\n*(gathered before investigation started — use this to skip basic recon)*"]
+    parts = ["## Pre-fetched Kubernetes Context\n*(gathered before investigation started — use this data directly. Do NOT re-run these kubectl commands.)*"]
     if results.get("pod_status") and "(error" not in results["pod_status"]:
         parts.append(f"\n### Pod Status (namespace: {namespace})\n```\n{results['pod_status']}\n```")
     if results.get("recent_events") and "(error" not in results["recent_events"]:
