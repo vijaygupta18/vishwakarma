@@ -170,16 +170,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 # Post result
                 from vishwakarma.plugins.relays.slack.plugin import SlackDestination
                 dest = SlackDestination({"token": config.slack_bot_token})
-                dest.post_investigation(
-                    title=question[:100],
-                    analysis=analysis,
-                    source="slack",
-                    channel=channel,
-                    thread_ts=thread_ts,
-                    pdf_path=pdf_path,
-                )
-
-                # Save to DB
+                # Save to DB first to get inc_id for feedback buttons
+                inc_id = None
                 try:
                     from vishwakarma.storage.queries import save_incident
                     import hashlib, time
@@ -198,6 +190,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                     )
                 except Exception as e:
                     log.warning(f"DB save failed: {e}")
+
+                dest.post_investigation(
+                    title=question[:100],
+                    analysis=analysis,
+                    source="slack",
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    pdf_path=pdf_path,
+                    incident_id=inc_id,
+                )
 
             except Exception as e:
                 log.error(f"Investigation failed: {e}", exc_info=True)
@@ -301,6 +303,142 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 log.error(f"[CLOUDWATCH] Failed to forward '{alarm_name}': {e}")
 
         threading.Thread(target=_forward, daemon=True).start()
+
+    # ── RCA Feedback handlers ─────────────────────────────────────────────────
+
+    @app.action("vk_rca_correct")
+    def handle_rca_correct(ack, body, client):
+        ack()
+        incident_id = body["actions"][0]["value"]
+        user = body.get("user", {}).get("id", "unknown")
+        channel_id = body["channel"]["id"]
+        msg_ts = body["message"]["ts"]
+
+        try:
+            from vishwakarma.storage.queries import get_incident
+            incident = get_incident(incident_id)
+            if not incident:
+                return
+
+            analysis = incident.get("analysis", "")
+            alert_name = (incident.get("labels") or {}).get("alertname") or incident.get("title", "")
+
+            # Pass full analysis — LLM will extract key insight from the whole RCA
+            existing = learnings_manager.get(_infer_category(alert_name))
+            fact = _distill_fact(config, analysis, alert_name, existing_facts=existing)
+            if not fact:
+                client.chat_update(
+                    channel=channel_id, ts=msg_ts,
+                    text="✅ Already in learnings",
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *<@{user}>* — this root cause is already captured in learnings."}}],
+                )
+                return
+            category = _infer_category(alert_name, config=config, fact=fact)
+            learnings_manager.append(category, fact)
+            log.info(f"[FEEDBACK] ✅ Appended to learnings[{category}]: {fact[:80]}")
+            # Compact if category has grown large
+            llm = config.make_llm()
+            learnings_manager.compact(category, llm.summarize)
+
+            # Replace buttons with confirmation
+            client.chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=f"✅ RCA marked correct by <@{user}>",
+                blocks=[{
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"✅ *Marked correct by <@{user}>* — root cause added to `{category}` learnings."},
+                }],
+            )
+        except Exception as e:
+            log.error(f"[FEEDBACK] vk_rca_correct failed: {e}", exc_info=True)
+
+    @app.action("vk_rca_wrong")
+    def handle_rca_wrong(ack, body, client):
+        ack()
+        import json as _json
+        incident_id = body["actions"][0]["value"]
+        private_metadata = _json.dumps({
+            "incident_id": incident_id,
+            "channel": body["channel"]["id"],
+            "msg_ts": body["message"]["ts"],
+        })
+        try:
+            client.views_open(
+                trigger_id=body["trigger_id"],
+                view={
+                    "type": "modal",
+                    "callback_id": "vk_rca_wrong_modal",
+                    "private_metadata": private_metadata,
+                    "title": {"type": "plain_text", "text": "Incorrect RCA"},
+                    "submit": {"type": "plain_text", "text": "Save to Learnings"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "input",
+                            "block_id": "real_cause",
+                            "label": {"type": "plain_text", "text": "What was the real root cause?"},
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "real_cause_input",
+                                "multiline": True,
+                                "placeholder": {"type": "plain_text", "text": "e.g. OOM kill due to memory leak in payment service v2.3.1 — not Redis eviction as concluded"},
+                            },
+                        }
+                    ],
+                },
+            )
+        except Exception as e:
+            log.error(f"[FEEDBACK] vk_rca_wrong modal open failed: {e}", exc_info=True)
+
+    @app.view("vk_rca_wrong_modal")
+    def handle_rca_wrong_submit(ack, body, client):
+        ack()
+        import json as _json
+        user = body.get("user", {}).get("id", "unknown")
+        real_cause = body["view"]["state"]["values"]["real_cause"]["real_cause_input"]["value"] or ""
+
+        try:
+            meta = _json.loads(body["view"].get("private_metadata") or "{}")
+            incident_id = meta.get("incident_id", "")
+            channel_id = meta.get("channel", "")
+            msg_ts = meta.get("msg_ts", "")
+
+            from vishwakarma.storage.queries import get_incident
+            incident = get_incident(incident_id) if incident_id else None
+            alert_name = (incident.get("labels") or {}).get("alertname") if incident else ""
+
+            # Distill correction into a clean fact, deduped against existing learnings
+            existing = learnings_manager.get(_infer_category(alert_name or ""))
+            fact = _distill_fact(config, real_cause, alert_name or "", correction=True, existing_facts=existing)
+            if not fact:
+                # Duplicate — remove buttons from original message
+                if channel_id and msg_ts:
+                    client.chat_update(
+                        channel=channel_id, ts=msg_ts,
+                        text="✅ Already in learnings",
+                        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": f"✅ *<@{user}>* — this correction is already captured in learnings."}}],
+                    )
+                return
+            category = _infer_category(alert_name or "", config=config, fact=fact)
+            learnings_manager.append(category, fact)
+            llm = config.make_llm()
+            learnings_manager.compact(category, llm.summarize)
+            log.info(f"[FEEDBACK] ❌ Correction appended to learnings[{category}]: {fact[:80]}")
+
+            # Update the original feedback message
+            if channel_id and msg_ts:
+                client.chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=f"❌ RCA corrected by <@{user}>",
+                    blocks=[{
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"❌ *Corrected by <@{user}>* — real cause added to `{category}` learnings."},
+                    }],
+                )
+        except Exception as e:
+            log.error(f"[FEEDBACK] vk_rca_wrong_submit failed: {e}", exc_info=True)
 
     # ── Start ─────────────────────────────────────────────────────────────────
 
@@ -434,6 +572,160 @@ def _help_text() -> str:
 • `@oogway debug check error rate for rider-app since last deploy`
 
 For deep investigations, always use `debug` — I'll search metrics, logs, K8s events, and databases."""
+
+
+def _extract_root_cause(analysis: str) -> str:
+    """Extract plain text from the ## Root Cause section of a markdown RCA."""
+    import re
+    match = re.search(r'##\s*Root Cause\s*\n(.*?)(?=\n##|\Z)', analysis, re.DOTALL | re.IGNORECASE)
+    if match:
+        # Strip markdown formatting from the extracted section
+        text = match.group(1).strip()
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)   # bold
+        text = re.sub(r'`(.+?)`', r'\1', text)           # inline code
+        text = re.sub(r'#{1,6}\s*', '', text)             # headers
+        return text[:1000]
+    # Fallback: first 500 chars stripped of markdown
+    text = re.sub(r'#{1,6}\s*\S+.*\n?', '', analysis)
+    return text.strip()[:500]
+
+
+def _infer_category(alert_name: str, config=None, fact: str = "") -> str:
+    """
+    Pick the best learning category for an alert using the fast LLM.
+    Falls back to keyword matching if LLM is unavailable.
+    """
+    from vishwakarma.core.learnings import LearningsManager, _ALERT_CATEGORY_KEYWORDS
+    lm = LearningsManager()
+    existing = [c["category"] for c in lm.list_categories()]
+
+    if config:
+        try:
+            import litellm, re
+            model = config.llm.fast_model or config.llm.model
+            prompt = (
+                f"You are categorizing an incident learning fact.\n\n"
+                f"Alert: {alert_name}\n"
+                f"Fact: {fact[:300]}\n\n"
+                f"Existing categories: {', '.join(existing)}\n\n"
+                f"Reply with ONLY a single category name (lowercase, no spaces — use underscores). "
+                f"Pick an existing one if it fits well. Create a new short name if none fit. "
+                f"Examples: redis, rds, kubernetes, networking, payments, drainer"
+            )
+            resp = litellm.completion(
+                model=model,
+                api_key=config.llm.api_key,
+                api_base=config.llm.api_base,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0.0,
+                timeout=15,
+            )
+            cat = (resp.choices[0].message.content or "").strip().lower()
+            cat = re.sub(r"[^a-z0-9_-]", "", cat)[:64]
+            if cat:
+                # Create category if new
+                if cat not in existing:
+                    lm.create(cat)
+                    log.info(f"[FEEDBACK] Created new learnings category: {cat}")
+                return cat
+        except Exception as e:
+            log.warning(f"[FEEDBACK] LLM category inference failed: {e} — falling back to keywords")
+
+    # Keyword fallback
+    alert_lower = alert_name.lower()
+    for cat, keywords in _ALERT_CATEGORY_KEYWORDS.items():
+        if any(kw in alert_lower for kw in keywords):
+            return cat
+    return "general"
+
+
+def _word_overlap(a: str, b: str) -> float:
+    """Jaccard similarity on words >3 chars — used for fast dedup."""
+    wa = set(w.lower() for w in a.split() if len(w) > 3)
+    wb = set(w.lower() for w in b.split() if len(w) > 3)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / len(wa | wb)
+
+
+def _is_programmatic_duplicate(text: str, existing_facts: str) -> bool:
+    """Return True if text overlaps >55% with any existing fact line."""
+    for line in existing_facts.splitlines():
+        if line.strip().startswith("- "):
+            if _word_overlap(text, line[2:]) > 0.55:
+                return True
+    return False
+
+
+def _distill_fact(config, text: str, alert_name: str, correction: bool = False, existing_facts: str = "") -> str:
+    """
+    Distill a root cause (or correction) into a concise, reusable learning fact.
+    Deduplicates against existing facts (programmatic fast-path + LLM semantic check).
+    Returns empty string if the fact is already covered.
+    """
+    # Fast programmatic dedup — catches exact or near-exact repeats before touching LLM
+    if existing_facts and _is_programmatic_duplicate(text, existing_facts):
+        log.info("[FEEDBACK] Programmatic dedup: fact already covered, skipping")
+        return ""
+
+    try:
+        import litellm, json as _json, re as _re
+        prefix = "Correction" if correction else "Finding"
+
+        if correction:
+            # ❌ Wrong — user correction: fix typos, one clean sentence
+            prompt = (
+                f"Alert: {alert_name}\n"
+                f"Text: {text[:400]}\n\n"
+                f'Respond with JSON only: {{"summary": "one sentence, typos fixed"}}'
+            )
+        else:
+            # ✅ Correct — extract actionable debugging insight from full RCA
+            # Strip markdown so model focuses on content
+            clean = _re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+            clean = _re.sub(r'`(.+?)`', r'\1', clean)
+            clean = _re.sub(r'^[-*]\s+', '', clean, flags=_re.MULTILINE)
+            clean = _re.sub(r'\n{2,}', ' ', clean).strip()
+            prompt = (
+                f"Alert: {alert_name}\n"
+                f"Full RCA:\n{clean[:1200]}\n\n"
+                f'Respond with JSON only: {{"summary": "one concise sentence capturing: what caused it, how it was confirmed, and what to check first next time this alert fires"}}'
+            )
+
+        resp = litellm.completion(
+            model=config.llm.model,
+            api_key=config.llm.api_key,
+            api_base=config.llm.api_base,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+            temperature=0.0,
+            timeout=60,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        m = _re.search(r'\{[^{}]*"summary"[^{}]*\}', raw, _re.DOTALL)
+        summary = _json.loads(m.group()).get("summary", "").strip() if m else ""
+        if not summary:
+            raise ValueError("no summary in JSON")
+        fact = f"{prefix}: {summary}"
+
+        # Dedup — check cleaned fact against existing
+        if existing_facts and _is_programmatic_duplicate(fact, existing_facts):
+            log.info("[FEEDBACK] Semantic dedup: distilled fact already covered, skipping")
+            return ""
+
+        return fact
+    except Exception as e:
+        log.warning(f"[FEEDBACK] Distillation failed: {e} — falling back to first sentence")
+        import re as _re
+        prefix = "Correction" if correction else "Finding"
+        first = _re.split(r'(?<=[.!?])\s', text.strip())[0].strip(" -•'\"\t\n")[:200]
+        if not first:
+            return ""
+        first = first[0].upper() + first[1:]
+        if first[-1] not in ".!?":
+            first += "."
+        return f"{prefix}: {first}"
 
 
 def _format_stats(stats: dict) -> str:

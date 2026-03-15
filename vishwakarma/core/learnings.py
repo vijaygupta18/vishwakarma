@@ -178,6 +178,41 @@ class LearningsManager:
             })
         return result
 
+    def compact(self, category: str, llm_summarize_fn) -> bool:
+        """
+        If a category has grown large (>30 facts or >4KB), use the LLM to
+        consolidate it into the best, non-redundant set of facts.
+        Returns True if compaction happened.
+        """
+        cat = category.lower().strip()
+        content = self.get(cat)
+        facts = [l.strip() for l in content.splitlines() if l.strip().startswith("- ")]
+
+        if len(facts) <= 50 and len(content) <= 5000:
+            return False
+
+        log.info(f"Compacting learnings category '{cat}' ({len(facts)} facts, {len(content)} bytes)")
+
+        prompt = (
+            f"The following is a list of learned facts for incident category '{cat}'.\n"
+            f"Consolidate them into the best, most actionable set of facts:\n"
+            f"- Merge duplicates and near-duplicates into one\n"
+            f"- Keep facts specific (service names, error types, fix patterns)\n"
+            f"- Remove vague or generic facts\n"
+            f"- Output ONLY bullet points starting with '- '\n\n"
+            f"{content}"
+        )
+        try:
+            compacted = llm_summarize_fn(prompt)
+            # Rebuild file: header + compacted facts
+            header = f"# {cat.capitalize()} Learnings\n"
+            self.set(cat, header + compacted.strip() + "\n")
+            log.info(f"Compacted '{cat}' learnings successfully")
+            return True
+        except Exception as e:
+            log.warning(f"Learnings compaction failed for '{cat}': {e}")
+            return False
+
     def for_alert(self, alert_name: str) -> str:
         """
         Map an alert name to relevant categories using keyword matching,

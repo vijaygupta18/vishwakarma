@@ -37,6 +37,7 @@ class SlackDestination:
         channel: str | None = None,
         thread_ts: str | None = None,
         pdf_path: str | None = None,
+        incident_id: str | None = None,
     ) -> dict:
         channel = channel or self._channel
         client = self._get_client()
@@ -117,6 +118,43 @@ class SlackDestination:
                     text=chunk,
                     blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
                 )
+
+        # Post feedback buttons if we have an incident_id to reference
+        if incident_id:
+            try:
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=msg_ts,
+                    text="Was this RCA accurate?",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"},
+                        },
+                        {
+                            "type": "actions",
+                            "block_id": f"rca_feedback_{incident_id[:16]}",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True},
+                                    "style": "primary",
+                                    "action_id": "vk_rca_correct",
+                                    "value": incident_id,
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True},
+                                    "style": "danger",
+                                    "action_id": "vk_rca_wrong",
+                                    "value": incident_id,
+                                },
+                            ],
+                        },
+                    ],
+                )
+            except Exception as e:
+                log.warning(f"Feedback buttons post failed: {e}")
 
         return {"ts": msg_ts, "channel": response["channel"]}
 

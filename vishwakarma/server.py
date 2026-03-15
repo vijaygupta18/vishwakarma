@@ -396,6 +396,7 @@ async def _do_investigation(config, state, issue, incident_id: str, fingerprint:
                 source=issue.source,
                 severity=issue.severity,
                 pdf_path=pdf_path,
+                incident_id=incident_id,
             )
             slack_ts = resp.get("ts")
         except Exception as e:
