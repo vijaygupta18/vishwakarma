@@ -36,7 +36,7 @@ graph TB
             E3[fast_model entity extraction]
             E4[Runbook keyword match]
         end
-        subgraph LOOP[Agentic Loop up to 40 steps]
+        subgraph LOOP[Agentic Loop severity-scaled steps]
             LLM[LLM open-large]
             EXEC[Execute tools in parallel up to 16]
             CHK[Checkpoint at step 20]
@@ -52,8 +52,9 @@ graph TB
 
     subgraph OUT[Outputs]
         PDF[PDF Report]
-        POST[Slack RCA post with PDF]
+        POST[Slack RCA post with PDF and feedback buttons]
         DB[(SQLite /data/vishwakarma.db)]
+        FB[Feedback loop to Learnings]
     end
 
     AM --> API
@@ -106,10 +107,11 @@ graph TB
                     │  📚 SQLite: last 3 investigations of this alert      │
                     │  ⚡ fast_model: extract service / namespace / impact  │
                     │  📖 Runbook match: keyword → agents.json → LLM       │
+                    │  🧠 Learnings: for_alert() pre-injects relevant facts │
                     └───────────────────────────┬─────────────────────────┘
                                                 │  merged into extra_system_prompt
                     ┌───────────────────────────▼─────────────────────────┐
-                    │  AGENTIC LOOP  (max 40 steps)                        │
+                    │  AGENTIC LOOP  (severity-scaled: 20–60 steps)        │
                     │                                                      │
                     │  Step 1:  LLM reads runbook → todo_write() plan      │
                     │  Step 2+: LLM calls tools in parallel (up to 16)     │
@@ -126,6 +128,8 @@ graph TB
                     │                                                      │
                     │  📄 generate_pdf()  ──► /tmp/rca-{uuid}.pdf         │
                     │  💬 Slack: post RCA summary + upload PDF in thread   │
+                    │       └── ✅ Correct / ❌ Wrong feedback buttons      │
+                    │              └── LLM distills fact → learnings        │
                     │  🗄️  SQLite: save_incident() → /data/vishwakarma.db  │
                     └──────────────────────────────────────────────────────┘
 ```
@@ -197,7 +201,10 @@ engine.investigate(question, runbooks, extra_system_prompt)
 └──────────────────────────┬───────────────────────────┘
                            │
               ┌────────────▼────────────┐
-              │   LOOP  step ≤ 40       │◄──────────────────┐
+              │   LOOP  step ≤ N        │◄──────────────────┐
+              │  (N: critical=60,       │
+              │   high=50, warning=40,  │
+              │   low=25, info=20)      │
               └────────────┬────────────┘                   │
                            │                                │
               ┌────────────▼────────────┐                   │
@@ -342,7 +349,9 @@ Alert name: "RDS_HighCPU_atlas-customer-r1"
 | 🗺️ **Runbook routing** | Per-alert runbooks matched by keyword, then LLM classification fallback |
 | ⚡ **Pre-enrichment** | K8s pod status, warning events, prior incidents, and entity extraction — all in parallel *before* the loop starts |
 | 📚 **Site knowledge base** | `/data/knowledge.md` on PVC, injected into every investigation — edit without rebuilding the image |
-| 🧠 **Learnings system** | Accumulated incident knowledge organized by category (rds, redis, drainer…). Agent reads relevant categories at investigation start via `learnings_list` + `learnings_read` tools. Teach it new facts via `@oogway learn <category> <fact>`. |
+| 🧠 **Learnings system** | Accumulated incident knowledge organized by category (rds, redis, drainer…). Relevant facts are pre-injected before every investigation via `for_alert()` — no wasted tool steps. Auto-compacts when a category exceeds 50 facts or 5KB. |
+| 🔁 **Feedback loop** | After every RCA, Slack posts ✅ Correct / ❌ Wrong buttons. On feedback, LLM distills the root cause into a clean one-sentence fact, deduplicates against existing learnings, and appends to the right category automatically. |
+| ⚖️ **Severity-scaled steps** | Investigation depth scales with alert severity — critical alerts get up to 60 steps, info alerts get 20. Prevents wasted compute on low-priority alerts. |
 | 🖥️ **Web UI** | Built-in dashboard at `/ui` — browse incidents, view investigation tool traces, manage learnings per category |
 | 🔁 **Incident history** | SQLite stores every investigation; prior findings for recurring alerts are injected as context |
 | 🚀 **Parallel tools** | Up to 16 tools run simultaneously per step |
@@ -377,7 +386,7 @@ llm:
   fast_model: openai/gpt-4o-mini  # summarisation + extraction + compaction
 
 cluster_name: my-cluster          # shown to LLM in every investigation
-max_steps: 40                     # max agentic loop iterations
+max_steps: 40                     # default max steps (overridden per-alert by severity)
 dedup_window: 300                 # seconds to suppress duplicate alerts
 
 toolsets:
@@ -497,7 +506,18 @@ Open `http://<vishwakarma>:5050/ui` → **Learnings** tab. Browse categories, ed
 
 **How the agent uses learnings:**
 
-At the start of every investigation the agent calls `learnings_list` to see available categories, then `learnings_read(category)` to load the ones relevant to the current alert. No pre-injection — the agent decides what's relevant.
+Relevant learnings are **pre-injected** before every investigation starts — `for_alert(alert_name)` keyword-matches the alert to categories and injects the facts directly into the system prompt. No tool steps wasted, context arrives ready.
+
+**Feedback loop — auto-learning from RCAs:**
+
+After every investigation, Slack posts feedback buttons in the thread:
+- **✅ Correct** — LLM distills the full RCA into one actionable sentence (root cause + confirmation + what to check next time), deduplicates against existing facts, appends to the right category.
+- **❌ Wrong** — Opens a modal. User types the real cause. LLM cleans typos, distills into one sentence, deduplicates, appends.
+- **Duplicate detected** — Buttons are replaced with "already captured" — no duplicate stored.
+
+**Auto-compaction:**
+
+When a category grows beyond 50 facts or 5KB, LLM consolidates it — merging duplicates, removing vague entries, keeping the most actionable facts.
 
 **Default categories:** `rds`, `redis`, `drainer`, `kubernetes`, `networking`, `general`. Add your own via the UI or `@oogway learn <new-category> <fact>`.
 
