@@ -2,6 +2,7 @@
 Core data models for Vishwakarma.
 All request/response types, tool call records, and LLM results.
 """
+from enum import Enum
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field
 
 # ── Tool Call Models ──────────────────────────────────────────────────────────
 
-class ToolStatus(str):
+class ToolStatus(str, Enum):
     SUCCESS = "success"
     ERROR = "error"
     NO_DATA = "no_data"
@@ -175,7 +176,7 @@ class AlertManagerPayload(BaseModel):
 
 # ── Health Check Models ───────────────────────────────────────────────────────
 
-class CheckMode(str):
+class CheckMode(str, Enum):
     MONITOR = "monitor"     # pass/fail, notify on failure only
     ANALYZE = "analyze"     # always analyze and report
 

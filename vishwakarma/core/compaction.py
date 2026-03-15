@@ -161,12 +161,20 @@ def _llm_compact(messages: list[dict], llm) -> list[dict]:
     compaction_messages = [m for m in messages if m.get("role") != "system"]
     compaction_messages.append({"role": "user", "content": COMPACTION_PROMPT})
 
+    def _excerpt(content: str, max_chars: int = 2000) -> str:
+        """Keep head + tail of long content to preserve both context and errors."""
+        if len(content) <= max_chars:
+            return content
+        head = max_chars * 2 // 3
+        tail = max_chars - head
+        return content[:head] + f"\n... [{len(content) - max_chars} chars omitted] ...\n" + content[-tail:]
+
     try:
         summary = llm.summarize(
             # Pass as a single string — summarize() does a simple completion
             "\n\n".join(
                 f"[{m.get('role', 'unknown').upper()}]: "
-                + (m.get("content") or "")[:2000]
+                + _excerpt(m.get("content") or "")
                 for m in compaction_messages[:-1]  # exclude the compaction prompt itself
             )
             + f"\n\n{COMPACTION_PROMPT}"

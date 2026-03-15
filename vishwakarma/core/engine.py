@@ -315,11 +315,28 @@ class InvestigationEngine:
                     pending_approvals=pending_approvals,
                 )
 
-        # Max steps reached
-        log.warning(f"Max steps ({self.max_steps}) reached without conclusion")
+        # Max steps reached — force a final synthesis call
+        log.warning(f"Max steps ({self.max_steps}) reached — forcing final synthesis")
+        messages.append({
+            "role": "user",
+            "content": (
+                f"**Max investigation steps ({self.max_steps}) reached.** "
+                "You must now write the final RCA based on everything gathered so far. "
+                "Do NOT call any more tools. Synthesize your best assessment:\n\n"
+                "## Root Cause\n## Confidence\n## Evidence Chain\n## Immediate Fix\n## Prevention\n## Needs More Investigation\n\n"
+                "If root cause is still unclear, state what was checked, what was found, and what would be needed to confirm."
+            ),
+        })
+        try:
+            final_response = self.llm.complete(messages=messages, tools=None)
+            answer = final_response.content or "Investigation incomplete: max steps reached. Review tool outputs above."
+        except Exception as e:
+            log.error(f"Final synthesis call failed: {e}")
+            answer = "Investigation incomplete: max steps reached. Review the tool outputs above for findings."
+
         meta = self.llm.build_meta(self.max_steps, compactions, start_time)
         return LLMResult(
-            answer="Investigation incomplete: max steps reached. Review the tool outputs above for findings.",
+            answer=answer,
             tool_outputs=all_tool_outputs,
             messages=messages,
             meta=meta,
@@ -364,7 +381,25 @@ class InvestigationEngine:
 
         tools = self.executor.openai_tools()
 
+        checkpoint_injected_stream = False
+
         for step in range(self.max_steps):
+            # Checkpoint: at step 20, force the LLM to decide RCA-or-continue
+            if step == CHECKPOINT_STEP and not checkpoint_injected_stream:
+                checkpoint_injected_stream = True
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"**Investigation Checkpoint (step {step}):** "
+                        "You have gathered significant data. Pause and evaluate:\n"
+                        "1. What is your current best hypothesis for the root cause?\n"
+                        "2. Do you have enough evidence to write the final RCA now?\n"
+                        "   - If YES → write the complete RCA immediately (Root Cause / Confidence / Evidence Chain / Immediate Fix / Prevention).\n"
+                        "   - If NO → state in one sentence exactly what is still missing, then continue investigating.\n\n"
+                        "Be decisive. Do not re-run tools you have already run."
+                    ),
+                })
+
             messages, did_compact = compact_messages(messages, llm=self.llm)
             if did_compact:
                 compactions += 1
@@ -386,8 +421,8 @@ class InvestigationEngine:
                     collected_tool_calls = chunk.get("tool_calls", [])
 
             if not collected_tool_calls:
-                # Include full messages so callers can preserve complete session history
-                messages.append({"role": "user", "content": question})
+                # Append only the assistant message — user message is already in messages
+                # from build_messages() and must not be duplicated
                 messages.append({"role": "assistant", "content": collected_content})
                 yield {"type": "done", "content": collected_content, "messages": messages}
                 return

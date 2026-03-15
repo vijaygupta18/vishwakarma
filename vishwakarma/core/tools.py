@@ -258,7 +258,16 @@ class ToolExecutor:
     def _run_shell(self, tool: ToolDef, params: dict) -> ToolOutput:
         try:
             # Fill in {param} placeholders
-            cmd = tool.command.format(**params)  # type: ignore
+            try:
+                cmd = tool.command.format(**params)  # type: ignore
+            except KeyError as e:
+                return ToolOutput(
+                    tool_call_id="",
+                    tool_name=tool.name,
+                    status=ToolStatus.ERROR,
+                    error=f"Missing required parameter {e} for tool '{tool.name}'. Provided: {list(params.keys())}",
+                    invocation=str(tool.command),
+                )
             invocation = cmd
 
             log.debug(f"Running shell tool: {cmd}")

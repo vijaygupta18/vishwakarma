@@ -28,7 +28,13 @@ diagnose root causes, and recommend fixes.
 You have access to tools to query Kubernetes, metrics (Prometheus/VictoriaMetrics), \
 logs (Elasticsearch, Loki), cloud services (AWS CLI), and more.
 
+**READ-ONLY MODE:** You are an observability agent only. NEVER run commands that modify \
+cluster state: no `kubectl delete`, `kubectl apply`, `kubectl edit`, `kubectl scale`, \
+`kubectl cordon`, `kubectl drain`, or any AWS write operations. Investigate only.
+
 Always:
+- Check the **Site Knowledge Base** first for cluster-specific values (namespaces, service names, metric names, proven commands) before making any tool calls
+- Use the pre-fetched context provided at the start of the investigation — do NOT re-run kubectl commands that already ran
 - Gather evidence before concluding
 - Be specific: include service names, namespaces, pod names, timestamps, metric values
 - State what you checked and what you found (or didn't find)
@@ -40,12 +46,15 @@ INVESTIGATION_PHASES = """\
 ## Investigation Protocol
 
 **MANDATORY FIRST ACTION:** Call `todo_write` with your full investigation plan before anything else.
+- If a runbook is provided: your todo_write steps MUST mirror the runbook's steps exactly — do not substitute generic RECON steps
 - List every step with status `pending`
 - On the FIRST `todo_write` call: mark all INDEPENDENT tasks as `in_progress` simultaneously and start executing them NOW in the same response (parallel tool calls)
 - Update status `in_progress` → `completed` as each step finishes
 - If you discover new investigation areas, add them to the todo list
 
 **RUNBOOK TAKES PRECEDENCE:** If a runbook is provided, follow the runbook's steps as your investigation plan. Do NOT default to generic Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or other sources.
+
+**STEP BUDGET AWARENESS:** You have a finite number of steps. Prioritize high-signal sources (metrics, error logs) over exhaustive enumeration. If you've tried 3 different approaches on the same angle with no data, move on — record it as "checked, no data" and proceed.
 
 If no runbook is provided, investigate in structured phases:
 
@@ -61,6 +70,7 @@ Hypothesis 1: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <wh
 Hypothesis 2: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
 Hypothesis 3: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
 ```
+Confidence calibration: HIGH = direct evidence (metric spike, error log); MEDIUM = strong correlation but no single smoking gun; LOW = pattern fits but no direct evidence yet.
 Then test each hypothesis with targeted tool calls. Eliminate, confirm, or update confidence.
 
 ### PHASE EVALUATION (after each phase)
@@ -128,8 +138,12 @@ GENERAL_GUIDELINES = """\
 - **If `aws cloudwatch describe-alarms --state-value ALARM` returns empty → the alarm has already resolved (normal for RDS/CPU spikes). Do NOT retry this command.** Use `startsAt` from the alert as your time anchor and proceed with investigation.
 - **If a bash command returns non-zero exit code → do not retry the same command.** Read the error, fix the command, or try an alternative approach.
 
+**Pre-fetched context:**
+- Before the investigation loop starts, `kubectl get pods`, `kubectl get events`, and `kubectl get replicasets` are run and provided to you as context. DO NOT re-run these exact commands — use the results already provided. You may run narrower follow-up commands (e.g. `kubectl describe pod <specific-pod>`, `kubectl logs <pod>`).
+
 **Timing:**
 - Always use the alert's `startsAt` as your anchor. Query window: `startsAt - 10min` to `startsAt + 1h`.
+- For Prometheus range queries: `start = startsAt - 10min`, `end = startsAt + 1h`, `step = 60` (seconds).
 - If `startsAt` not available, use `now - 30min`.
 - Never use arbitrary recent time ranges.
 
@@ -251,8 +265,8 @@ def build_system_prompt(
 
     # Runbooks
     if runbooks and Section.RUNBOOKS not in sections_off:
-        rb_text = "\n".join(f"- {r}" for r in runbooks)
-        parts.append(f"## Relevant Runbooks\n{rb_text}")
+        rb_text = "\n\n---\n\n".join(runbooks)
+        parts.append(f"## Relevant Runbook\n\n{rb_text}")
 
     if extra_prompt:
         parts.append(extra_prompt)

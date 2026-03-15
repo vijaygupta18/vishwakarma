@@ -131,11 +131,27 @@ class VishwakarmaLLM:
             kwargs["api_key"] = self.cfg.api_key
         if self.cfg.api_base:
             kwargs["api_base"] = self.cfg.api_base
+        if self.cfg.api_version:
+            kwargs["api_version"] = self.cfg.api_version
+        if self.cfg.max_tokens:
+            kwargs["max_tokens"] = self.cfg.max_tokens
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        response = completion(**kwargs)
+        # Apply env var overrides (same as complete())
+        max_content = os.environ.get("OVERRIDE_MAX_CONTENT_SIZE")
+        max_output = os.environ.get("OVERRIDE_MAX_OUTPUT_TOKEN")
+        if max_content:
+            litellm.max_input_tokens = int(max_content)  # type: ignore
+        if max_output:
+            kwargs["max_tokens"] = int(max_output)
+
+        try:
+            response = completion(**kwargs)
+        except Exception as e:
+            log.error(f"LLM stream call failed: {e}", exc_info=True)
+            raise
 
         collected_content = ""
         collected_tool_calls: dict[int, dict] = {}
@@ -235,7 +251,7 @@ class VishwakarmaLLM:
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=1024,
+                max_tokens=4096,   # 1024 was too small for compaction summaries
                 timeout=60,
                 **({"api_key": self.cfg.api_key} if self.cfg.api_key else {}),
                 **({"api_base": self.cfg.api_base} if self.cfg.api_base else {}),
