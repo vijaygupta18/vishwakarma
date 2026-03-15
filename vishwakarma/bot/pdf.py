@@ -438,7 +438,7 @@ def generate_pdf(
     </div>
   </div>
 
-  <div style="font-size:10px; color:rgba(255,255,255,0.3); letter-spacing:0.5px;">
+  <div style="font-size:10px; color:rgba(255,255,255,0.6); letter-spacing:0.5px;">
     {_source_banner(source, sev)}
   </div>
 </div>
@@ -496,12 +496,17 @@ def _build_evidence(tool_outputs: list) -> str:
 
     cards = []
     for out in tool_outputs:
-        inv = _escape(out.get("invocation", "tool"))
-        status = out.get("status", "unknown")
+        if isinstance(out, dict):
+            inv = _escape(out.get("invocation", "tool"))
+            status = out.get("status", "unknown")
+            content = out.get("output") or out.get("error") or ""
+        else:
+            inv = _escape(getattr(out, "invocation", None) or getattr(out, "tool_name", "tool"))
+            status = getattr(out, "status", "unknown")
+            content = getattr(out, "output", None) or getattr(out, "error", None) or ""
         # status may be a ToolStatus enum value or plain string
         if hasattr(status, "value"):
             status = status.value
-        content = out.get("output") or out.get("error") or ""
         if not content:
             continue
 
