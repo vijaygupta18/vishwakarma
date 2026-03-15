@@ -145,7 +145,6 @@ class InvestigationEngine:
             messages, did_compact = compact_messages(messages, llm=self.llm)
             if did_compact:
                 compactions += 1
-                guard.reset()
 
             # Call LLM
             response = self.llm.complete(
@@ -405,7 +404,6 @@ class InvestigationEngine:
             messages, did_compact = compact_messages(messages, llm=self.llm)
             if did_compact:
                 compactions += 1
-                guard.reset()
                 yield {"type": "compaction", "step": step}
 
             # Stream from LLM
