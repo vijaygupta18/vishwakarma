@@ -92,11 +92,13 @@ done
 
 ---
 
-## Step 2: Find the Top Queries — Use Direct Database Access (NOT AWS PI CLI)
+## Step 2: Find the Top Queries
 
-**CRITICAL: Do NOT use `aws pi describe-dimension-keys` — it frequently fails with IAM/CLI issues. Instead, query the database directly using `db_query` tool with the PostgreSQL connection.**
+Use BOTH methods in parallel — direct DB access is faster and more reliable, AWS PI gives historical SQL breakdown.
 
-First, run `learnings_read(database)` to get the full PostgreSQL diagnostic query templates.
+### Method A: Direct Database Access (PRIMARY — faster, always works)
+
+Run `learnings_read(database)` first to get the full PostgreSQL diagnostic query templates.
 
 **2a — Active queries consuming CPU (run on the affected DB's PG connection — bap_pg for customer, bpp_pg for driver):**
 ```
@@ -128,6 +130,40 @@ Look for:
 - High sequential scan count → missing index
 - Many waiting connections → lock contention or pool exhaustion
 - Single query consuming all active connections → kill candidate
+
+### Method B: AWS Performance Insights (SECONDARY — gives historical SQL breakdown)
+
+**PI requires `DbiResourceId` (e.g. `db-ABCDEF123456`), NOT the DBInstanceIdentifier. Check the Site Knowledge Base for DbiResourceIds.**
+
+**2f — Top SQL by load (use DbiResourceId from knowledge base):**
+```
+aws pi describe-dimension-keys \
+  --service-type RDS --identifier <DbiResourceId> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --metric db.load.avg \
+  --group-by '{"Group":"db.sql_tokenized","Limit":10}' \
+  --region <region> 2>/dev/null \
+  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.sql_tokenized.statement")"'
+```
+
+**2g — Wait events (confirms autovacuum, lock contention, I/O):**
+```
+aws pi describe-dimension-keys \
+  --service-type RDS --identifier <DbiResourceId> \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --metric db.load.avg \
+  --group-by '{"Group":"db.wait_event","Limit":10}' \
+  --region <region> 2>/dev/null \
+  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.wait_event.name")"'
+```
+
+Look for:
+- `IO:DataFileRead` dominant → full table scan or missing index
+- `IO:XactSync` + `Timeout:VacuumDelay` → autovacuum
+- `Lock:relation` or `Lock:tuple` → lock contention
+- Top SQL > 40% db.load → single query is the culprit
+
+**If PI fails** (IAM issues, empty response) → Method A results are sufficient.
 
 ---
 
