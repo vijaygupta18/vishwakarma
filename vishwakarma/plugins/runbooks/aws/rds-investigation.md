@@ -204,7 +204,7 @@ aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
 
 ## Step 4: Correlate — Which Service is Hitting This DB?
 
-Only run this step if Step 3 shows user impact OR connections are high.
+**ONLY run this step if Steps 1-3 did NOT give a clear root cause.** Skip if you already found the culprit query or root cause.
 
 **4a — Live pod logs for DB errors (use service names from knowledge base):**
 ```
