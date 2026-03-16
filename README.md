@@ -113,7 +113,8 @@ graph TB
                     ┌───────────────────────────▼─────────────────────────┐
                     │  AGENTIC LOOP  (severity-scaled: 20–60 steps)        │
                     │                                                      │
-                    │  Step 1:  LLM reads runbook → todo_write() plan      │
+                    │  Step 1:  todo_write() plan + first tool calls       │
+                    │           fired simultaneously in same response      │
                     │  Step 2+: LLM calls tools in parallel (up to 16)     │
                     │           ├── bash (kubectl, aws, stern, jq)         │
                     │           ├── prometheus_query_range                  │
@@ -147,6 +148,12 @@ Incoming Slack event
         │           │                                                        │
         │           ├── "help"   ──► post help text                         │
         │           ├── "status" ──► query SQLite stats                     │
+        │           │                                                        │
+        │           ├── "oracle [question]" ──────────────────────────┐    │
+        │           │       │  Multi-turn investigation session        │    │
+        │           │       │  per-thread context, follow-up memory   │    │
+        │           │       └──► engine.stream_investigate()           │    │
+        │           │               live tool call status updates      ◄────┘
         │           │                                                        │
         │           ├── "debug <question>" ─────────────────────────────┐  │
         │           │       │                                            │  │
@@ -652,13 +659,17 @@ Also update the `@oogway` references in the help text (`_help_text()`) and the D
 
 **Slack commands:**
 ```
-@yourbot <question>           — casual chat (no tools, fast reply)
-@yourbot debug <question>     — full investigation + PDF report
-@yourbot learn <category> <fact>  — teach the bot a new fact
-@yourbot forget <category> <keyword>  — remove a fact
-@yourbot status               — show incident stats
-@yourbot help                 — show help
+@yourbot <question>                   — casual chat (no tools, fast reply, tone-matched)
+@yourbot debug <question>             — full investigation + PDF report in thread
+@yourbot oracle <question>            — multi-turn investigation session with memory
+@yourbot oracle stop                  — end the oracle session in this thread
+@yourbot learn <category> <fact>      — teach the bot a new fact
+@yourbot forget <category> <keyword>  — remove a fact matching keyword
+@yourbot status                       — show incident stats
+@yourbot help                         — show help
 ```
+
+> **`debug` vs `oracle`:** Use `debug` for one-shot alert investigations — it produces a PDF and saves to incident history. Use `oracle` for interactive troubleshooting where you want to ask follow-up questions in the same thread — the bot remembers context across turns.
 
 ---
 
