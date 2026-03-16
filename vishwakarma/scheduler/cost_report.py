@@ -594,7 +594,7 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
     lines.append("| Service | Yesterday ($) | Day Before ($) | Day-over-Day | 7-day Avg ($) | vs Avg |")
     lines.append("|---------|---------------|----------------|--------------|---------------|--------|")
 
-    for svc, cost in svc_yesterday[:15]:
+    for svc, cost in svc_yesterday[:10]:
         svc_avg = svc_avgs.get(svc, 0)
         pct_avg = ((cost - svc_avg) / svc_avg * 100) if svc_avg > 0 else 0
         dollar_diff = cost - svc_avg
@@ -757,16 +757,54 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
 
     force=True  (on-demand via @oogway costs): always post full report
     force=False (scheduled daily run):         only post if anomalies detected
-    channel/thread_ts: if provided, post in that Slack thread (on-demand from @oogway costs)
+    channel/thread_ts: if provided, post in that Slack thread with live status updates
     """
     cr = config.cost_report
+
+    # Live status updater — posts progress to Slack thread like oracle streaming
+    _status_client = None
+    _status_ts = None
+    _status_lines: list[str] = []
+
+    def _status(msg: str):
+        """Post a live status update to the Slack thread."""
+        nonlocal _status_client, _status_ts
+        _status_lines.append(msg)
+        if not (channel and thread_ts and config.slack_bot_token):
+            return
+        try:
+            if _status_client is None:
+                from slack_sdk import WebClient
+                _status_client = WebClient(token=config.slack_bot_token)
+            visible = _status_lines[-10:]
+            text = "\n".join(visible)
+            if _status_ts is None:
+                resp = _status_client.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts, text=text,
+                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}],
+                )
+                _status_ts = resp["ts"]
+            else:
+                _status_client.chat_update(
+                    channel=channel, ts=_status_ts, text=text,
+                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}],
+                )
+        except Exception:
+            pass
+
     today = datetime.now(timezone.utc).date().isoformat()
 
     # 1. Fetch cost data
+    _status("⚙ `ce:GetCostAndUsage(30 days, by SERVICE)`")
     data = _fetch_cost_data(region=cr["region"])
+    _status(f"⚙ `ce:GetCostAndUsage(30 days, by SERVICE)`  ✓ {len(data['service_costs'])} services")
 
     # 2. Format and detect anomalies
     tables_md, anomalies, anomaly_strs = _format_cost_tables(data, cr["anomaly_threshold"])
+    if anomalies:
+        _status(f"⚠ `{len(anomalies)} anomalies detected`")
+    else:
+        _status("✓ `No anomalies above threshold`")
 
     # 3. Skip if scheduled run and no anomalies
     if not force and not anomalies:
@@ -774,45 +812,59 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         return
 
     # 4. For anomalous services, drill down with USAGE_TYPE + OPERATION breakdowns
-    #    Each extra API call is $0.01 — worth it for actual root cause data
     anomalous_services = [a["name"] for a in anomalies if a["type"] == "service"]
     usage_breakdowns = {}
     operation_breakdowns = {}
 
     for svc in anomalous_services:
-        # USAGE_TYPE: what resource type? (instance size, storage, data transfer)
+        short_name = svc.replace("Amazon ", "").replace("AWS ", "")[:30]
+        _status(f"⚙ `ce:USAGE_TYPE({short_name})`")
         try:
             breakdown = _fetch_usage_breakdown(svc, region=cr["region"])
             if breakdown:
                 usage_breakdowns[svc] = breakdown
+                _status(f"⚙ `ce:USAGE_TYPE({short_name})`  ✓ {len(breakdown)} types")
         except Exception as e:
+            _status(f"⚙ `ce:USAGE_TYPE({short_name})`  ✗")
             log.warning(f"Failed to fetch usage breakdown for {svc}: {e}")
 
-        # OPERATION: what happened? (CreateDBInstance, RunInstances, PutObject)
+        _status(f"⚙ `ce:OPERATION({short_name})`")
         try:
             ops = _fetch_operation_breakdown(svc, region=cr["region"])
             if ops:
                 operation_breakdowns[svc] = ops
+                _status(f"⚙ `ce:OPERATION({short_name})`  ✓ {len(ops)} ops")
         except Exception as e:
+            _status(f"⚙ `ce:OPERATION({short_name})`  ✗")
             log.warning(f"Failed to fetch operation breakdown for {svc}: {e}")
 
-    # 5. Fetch CloudWatch metrics that explain the billing (the actual "why")
-    #    E.g., ALB cost up → RequestCount doubled, RDS cost up → connections spiked
+    # 5. Fetch CloudWatch metrics
     cloudwatch_drivers = {}
     for svc in anomalous_services:
+        short_name = svc.replace("Amazon ", "").replace("AWS ", "")[:30]
+        _status(f"⚙ `cloudwatch:metrics({short_name})`")
         try:
             metrics_md = _fetch_cost_driver_metrics(svc, region=cr["region"])
             if metrics_md:
                 cloudwatch_drivers[svc] = metrics_md
-                log.info(f"Fetched CloudWatch cost drivers for {svc}")
+                _status(f"⚙ `cloudwatch:metrics({short_name})`  ✓")
+            else:
+                _status(f"⚙ `cloudwatch:metrics({short_name})`  — no data")
         except Exception as e:
+            _status(f"⚙ `cloudwatch:metrics({short_name})`  ✗")
             log.warning(f"Failed to fetch CloudWatch drivers for {svc}: {e}")
 
     # 6. Fetch month-end cost forecast
+    _status("⚙ `ce:GetCostForecast`")
     forecast = None
     try:
         forecast = _fetch_cost_forecast(region=cr["region"])
+        if forecast:
+            _status(f"⚙ `ce:GetCostForecast`  ✓ ${forecast['forecast_remaining']:.0f} remaining")
+        else:
+            _status("⚙ `ce:GetCostForecast`  — end of month")
     except Exception as e:
+        _status("⚙ `ce:GetCostForecast`  ✗")
         log.warning(f"Cost forecast failed: {e}")
 
     # 6. Build enriched context for LLM
@@ -886,16 +938,19 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         tables_md += f"- Actual spend this month so far: ${actual_so_far:.2f} ({days_elapsed} days)\n"
         tables_md += f"- **Estimated month total: ${est_month_total:.2f}**\n"
 
-    # 7. LLM analysis — use latest available date (yesterday) in title
+    # 7. LLM analysis
     latest_date = data["dates_sorted"][-1]
     title = f"AWS Cost Report — {latest_date}"
     if anomalies:
         title = f"AWS Cost Alert — {len(anomalies)} anomalies — {latest_date}"
 
+    _status("⚙ `LLM analysis`")
     llm = config.make_llm()
     analysis, severity = _analyze_costs(tables_md, anomalies, anomaly_strs, llm)
+    _status("⚙ `LLM analysis`  ✓")
 
     # 8. Generate PDF
+    _status("⚙ `Generating PDF`")
     pdf_path = None
     try:
         from vishwakarma.bot.pdf import generate_pdf
@@ -906,10 +961,23 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
             severity=severity,
             output_path=f"/data/cost_report_{today}.pdf",
         )
+        _status("⚙ `Generating PDF`  ✓")
     except Exception as e:
+        _status("⚙ `Generating PDF`  ✗")
         log.warning(f"PDF generation failed: {e}")
 
-    # 9. Post to Slack
+    # 9. Finalize status and post to Slack
+    step_count = len(_status_lines)
+    if _status_ts and _status_client:
+        try:
+            _status_client.chat_update(
+                channel=channel, ts=_status_ts,
+                text=f"📊 _{step_count} steps · done_",
+                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"📊 _{step_count} steps · done_"}]}],
+            )
+        except Exception:
+            pass
+
     try:
         from vishwakarma.plugins.relays.slack.plugin import SlackDestination
         dest = SlackDestination({"token": config.slack_bot_token})
