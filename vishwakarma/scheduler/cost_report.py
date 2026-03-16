@@ -532,32 +532,54 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
 
     Each anomaly dict: {type: "daily"|"service", name, cost, avg, pct_change}
     """
-    today = datetime.now(timezone.utc).date().isoformat()
     daily = data["daily_totals"]
     avg = data["seven_day_avg"]
     anomalies = []        # structured
     anomaly_strs = []     # human-readable
 
-    # Daily totals table
-    lines = [f"## AWS Cost Report Data — {today}\n"]
-    lines.append("### Daily Totals (last 7 days)")
-    lines.append("| Date       | Total ($) | vs 7-day Avg |")
-    lines.append("|------------|-----------|--------------|")
+    # Latest day = yesterday (CE data has ~24h delay), day before = the one before that
+    latest = data["dates_sorted"][-1]
+    day_before = data["dates_sorted"][-2] if len(data["dates_sorted"]) >= 2 else None
+    latest_total = daily[latest]
+    day_before_total = daily[day_before] if day_before else 0
+    dod_change = latest_total - day_before_total
+    dod_pct = ((dod_change / day_before_total) * 100) if day_before_total > 0 else 0
 
+    # Header with yesterday's date and day-over-day summary
+    lines = [f"## AWS Cost Report — {latest} (latest available data)\n"]
+    lines.append(f"**Yesterday ({latest}):** ${latest_total:.2f}")
+    if day_before:
+        lines.append(f"**Day before ({day_before}):** ${day_before_total:.2f}")
+        lines.append(f"**Day-over-day change:** {dod_change:+.2f} ({dod_pct:+.1f}%)")
+    lines.append(f"**7-day avg:** ${avg:.2f}")
+    lines.append("")
+
+    # Daily totals table
+    lines.append("### Daily Totals (last 7 days)")
+    lines.append("| Date       | Total ($) | Day-over-Day | vs 7-day Avg |")
+    lines.append("|------------|-----------|--------------|--------------|")
+
+    prev_total = None
     for date in data["dates_sorted"][-7:]:
         total = daily[date]
-        pct = ((total - avg) / avg * 100) if avg > 0 else 0
-        flag = " <-- ANOMALY" if pct > threshold * 100 else ""
-        if pct > threshold * 100:
+        pct_avg = ((total - avg) / avg * 100) if avg > 0 else 0
+        if prev_total is not None:
+            dod = total - prev_total
+            dod_p = ((dod / prev_total) * 100) if prev_total > 0 else 0
+            dod_str = f"{dod_p:+.1f}%"
+        else:
+            dod_str = "—"
+        flag = " <-- ANOMALY" if pct_avg > threshold * 100 else ""
+        if pct_avg > threshold * 100:
             anomalies.append({
                 "type": "daily", "name": date, "cost": total,
-                "avg": avg, "pct_change": round(pct, 1),
+                "avg": avg, "pct_change": round(pct_avg, 1),
             })
-            anomaly_strs.append(f"{date}: Total ${total:.2f} exceeds 7-day avg ${avg:.2f} by {pct:.1f}%")
-        lines.append(f"| {date} | {total:.2f} | {pct:+.1f}% |{flag}")
+            anomaly_strs.append(f"{date}: Total ${total:.2f} exceeds 7-day avg ${avg:.2f} by {pct_avg:.1f}%")
+        lines.append(f"| {date} | {total:.2f} | {dod_str} | {pct_avg:+.1f}% |{flag}")
+        prev_total = total
 
-    # Top services (yesterday or latest date)
-    latest = data["dates_sorted"][-1]
+    # Top services — yesterday vs day-before + 7-day avg
     svc_costs = data["service_costs"]
     svc_avgs = data["service_avgs"]
 
@@ -568,23 +590,28 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
             svc_yesterday.append((svc, cost))
     svc_yesterday.sort(key=lambda x: -x[1])
 
-    lines.append(f"\n### Top Services by Cost ({latest})")
-    lines.append("| Service | Cost ($) | 7-day Avg ($) | Change | $ Increase |")
-    lines.append("|---------|----------|---------------|--------|------------|")
+    lines.append(f"\n### Top Services — {latest} vs {day_before or 'N/A'}")
+    lines.append("| Service | Yesterday ($) | Day Before ($) | Day-over-Day | 7-day Avg ($) | vs Avg |")
+    lines.append("|---------|---------------|----------------|--------------|---------------|--------|")
 
     for svc, cost in svc_yesterday[:15]:
         svc_avg = svc_avgs.get(svc, 0)
-        pct = ((cost - svc_avg) / svc_avg * 100) if svc_avg > 0 else 0
+        pct_avg = ((cost - svc_avg) / svc_avg * 100) if svc_avg > 0 else 0
         dollar_diff = cost - svc_avg
-        flag = " <-- ANOMALY" if pct > threshold * 100 and cost >= 1.0 else ""
-        if pct > threshold * 100 and cost >= 1.0:
+        # Day-before cost for this service
+        db_cost = svc_costs.get(svc, {}).get(day_before, 0) if day_before else 0
+        dod_svc = ((cost - db_cost) / db_cost * 100) if db_cost > 0 else 0
+        dod_dollar = cost - db_cost
+
+        flag = " <-- ANOMALY" if pct_avg > threshold * 100 and cost >= 1.0 else ""
+        if pct_avg > threshold * 100 and cost >= 1.0:
             anomalies.append({
                 "type": "service", "name": svc, "cost": round(cost, 2),
-                "avg": round(svc_avg, 2), "pct_change": round(pct, 1),
+                "avg": round(svc_avg, 2), "pct_change": round(pct_avg, 1),
                 "dollar_increase": round(dollar_diff, 2),
             })
-            anomaly_strs.append(f"{svc}: ${cost:.2f} vs avg ${svc_avg:.2f} ({pct:+.1f}%, +${dollar_diff:.2f})")
-        lines.append(f"| {svc} | {cost:.2f} | {svc_avg:.2f} | {pct:+.1f}% | {dollar_diff:+.2f} |{flag}")
+            anomaly_strs.append(f"{svc}: ${cost:.2f} vs avg ${svc_avg:.2f} ({pct_avg:+.1f}%, +${dollar_diff:.2f})")
+        lines.append(f"| {svc} | {cost:.2f} | {db_cost:.2f} | {dod_svc:+.1f}% ({dod_dollar:+.2f}) | {svc_avg:.2f} | {pct_avg:+.1f}% |{flag}")
 
     # Cost composition — % of total spend
     total_latest = daily.get(latest, 1)
@@ -850,10 +877,11 @@ def _generate_and_post(config, force: bool = True):
         tables_md += f"- Actual spend this month so far: ${actual_so_far:.2f} ({days_elapsed} days)\n"
         tables_md += f"- **Estimated month total: ${est_month_total:.2f}**\n"
 
-    # 7. LLM analysis
-    title = f"Daily AWS Cost Report — {today}"
+    # 7. LLM analysis — use latest available date (yesterday) in title
+    latest_date = data["dates_sorted"][-1]
+    title = f"AWS Cost Report — {latest_date}"
     if anomalies:
-        title = f"AWS Cost Alert — {len(anomalies)} anomalies — {today}"
+        title = f"AWS Cost Alert — {len(anomalies)} anomalies — {latest_date}"
 
     llm = config.make_llm()
     analysis, severity = _analyze_costs(tables_md, anomalies, anomaly_strs, llm)
