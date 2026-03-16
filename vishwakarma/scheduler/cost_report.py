@@ -76,8 +76,9 @@ def _fetch_cost_data(region: str = "ap-south-1") -> dict:
     import boto3
 
     ce = boto3.client("ce", region_name=region)
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=30)
+    # CE end date is exclusive — use tomorrow to include today's (partial) data
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    start = end - timedelta(days=31)
 
     resp = ce.get_cost_and_usage(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
@@ -145,8 +146,8 @@ def _fetch_usage_breakdown(service_name: str, region: str = "ap-south-1") -> lis
     import boto3
 
     ce = boto3.client("ce", region_name=region)
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=9)
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    start = end - timedelta(days=10)
 
     resp = ce.get_cost_and_usage(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
@@ -210,8 +211,8 @@ def _fetch_operation_breakdown(service_name: str, region: str = "ap-south-1") ->
     import boto3
 
     ce = boto3.client("ce", region_name=region)
-    end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=9)
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    start = end - timedelta(days=10)
 
     resp = ce.get_cost_and_usage(
         TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
