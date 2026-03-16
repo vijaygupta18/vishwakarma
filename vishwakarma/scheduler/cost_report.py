@@ -688,12 +688,20 @@ def _analyze_costs(tables_md: str, anomalies: list[dict], anomaly_strs: list[str
             severity = "critical"
 
     if not anomalies:
-        # No anomalies — lightweight summary
         prompt = (
             f"{tables_md}\n\n"
-            "No cost anomalies detected. Provide a brief summary:\n"
-            "## Summary\n<1-2 sentences: total spend, top 3 services, trend direction>\n"
-            "## Cost Composition\n<top 5 services with % of total spend>\n"
+            "Analyze these AWS costs even though no anomalies exceeded the threshold. "
+            "The user still wants to understand where money is going and what changed.\n\n"
+            "Format your response as:\n"
+            "## Summary\n<2-3 sentences: yesterday's total, day-over-day change, week-over-week trend, month forecast>\n\n"
+            "## Where the Money Goes\n"
+            "<Top 5 services by cost with % of total. For each: what it is, "
+            "whether it went up or down vs day-before, and why "
+            "(e.g., 'EC2 dropped 13% — likely weekend traffic reduction', "
+            "'ELB stayed flat — fixed ALB hourly charges dominate')>\n\n"
+            "## Day-over-Day Changes\n"
+            "<Services with biggest $ changes vs day-before, explain likely reasons>\n\n"
+            "## Month Outlook\n<projected month total from forecast, whether on track vs last month>\n"
         )
     else:
         # Anomalies found — deep analysis with 3 layers of data

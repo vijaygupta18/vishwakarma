@@ -117,6 +117,50 @@ Order of sections:
 
 Runbooks use `<placeholder>` for anything cluster-specific and tell the agent to "use the value from the Site Knowledge Base". Never hardcode instance IDs, namespaces, or region names in runbooks.
 
+### Database Toolset
+
+The `database` toolset provides read-only SQL access to application databases (PostgreSQL, MySQL, ClickHouse). Tools: `db_query`, `db_list_tables`, `db_describe_table`.
+
+**Configuration** (in `config.yaml`):
+```yaml
+toolsets:
+  database:
+    enabled: true
+    config:
+      connections:
+        - name: clickhouse
+          type: clickhouse
+          host: your-clickhouse-host
+          port: 8123
+          username: readonly
+          password: ...
+          timeout: 30
+        - name: app_pg
+          type: postgresql
+          host: your-pg-reader.example.com
+          port: 5432
+          database: my_app_db
+          username: readonly
+          password: ...
+```
+
+**Safety:** Only SELECT queries are allowed (enforced by query validation + PostgreSQL `default_transaction_read_only=on`). Timeouts: ClickHouse 30s, PostgreSQL 10s.
+
+**Schema knowledge** goes on the PV as a learnings category — NOT in the repo (keeps deployment-specific data private):
+```bash
+# Create /data/learnings/database.md on the PVC with:
+# - Table names and relationships
+# - ID resolution patterns (how to trace across tables)
+# - Query templates for common investigations
+# - Which connection to use for which query type
+# - Tables without indexes (to avoid timeouts)
+kubectl cp database-learnings.md <namespace>/<pod>:/data/learnings/database.md
+```
+
+The generic runbook (`plugins/runbooks/database-investigation.md`) tells the agent to `learnings_read(database)` first, then use the tools. This way:
+- The runbook (open source) says **how** to investigate
+- The learnings file (on PV, private) says **what** to query for your specific schema
+
 ### Storage (`storage/db.py`)
 
 SQLite at `config.storage.db_path` (default `/data/vishwakarma.db`). Stores full investigation history. Prior incidents for recurring alerts are loaded and injected into pre-enrichment context. Oracle (interactive) sessions are also stored here.
@@ -125,6 +169,7 @@ SQLite at `config.storage.db_path` (default `/data/vishwakarma.db`). Stores full
 
 Runs in Socket Mode in a background thread alongside FastAPI. Two paths:
 - **`@bot debug <question>`** → full `engine.investigate()` + PDF + Slack post
+- **`@bot costs`** → on-demand AWS cost report with anomaly detection + PDF
 - **`@bot <anything>`** → `_simple_chat()` with fast_model, no tools, tone-matched reply
 - **Channel message with "CloudWatch Alarm"** → `parse_cloudwatch_slack_message()` → POST `/api/alertmanager`
 

@@ -36,6 +36,13 @@
       "runbook": "../runbooks/custom/ny-pt-alerts.md"
     },
     {
+      "id": "database-investigation",
+      "update_date": "2026-03-16",
+      "description": "Investigate issues involving application database records — rides, bookings, payments, drivers, riders, or any entity by UUID or phone number. Also covers RDS performance diagnostics using pg_stat_activity and pg_stat_user_tables. Requires database toolset enabled and database learnings on PV.",
+      "keywords": ["ride", "booking", "payment", "driver", "rider", "person", "uuid", "trace", "debug", "phone", "fare", "cancel", "refund", "transaction", "quote", "search_request", "pg_stat"],
+      "runbook": "../runbooks/database-investigation.md"
+    },
+    {
       "id": "ny-sre-sev2-alerts",
       "update_date": "2026-03-12",
       "description": "Investigate SRE Platform SEV2 alerts: Beckn 5xx errors, Juspay gateway/registry 5xx, ONDC gateway/registry 5xx, ride-to-search ratio drop, allocator not functioning. Alert labels: alert-ny-sre-sev2. Covers: Beckn5xxErrors, BecknExternalAPI5xx, JuspayGateway5xx, ONDCGateway5xx, RideToSearchRatioDown, AllocatorLooksDead.",

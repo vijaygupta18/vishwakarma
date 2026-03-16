@@ -209,6 +209,21 @@ Work through top-to-bottom. Stop at first match.
 
 ---
 
+## Step 5: Direct SQL Diagnostics (if database toolset is enabled)
+
+If the `database` toolset is available, run `learnings_read(database)` to load PostgreSQL diagnostic query templates, then query the database directly:
+
+**5a — Active/stuck queries consuming CPU:**
+Use `db_query` against the appropriate PostgreSQL connection to check `pg_stat_activity` for long-running queries, connection counts by application, and lock contention. The exact queries are in the database learnings.
+
+**5b — Missing indexes causing sequential scans:**
+Check `pg_stat_user_tables` for tables with high sequential scan counts vs low index scan counts. This is the most common cause of RDS CPU spikes.
+
+**5c — Table bloat:**
+Check `pg_stat_user_tables` for tables with high dead tuple counts that need vacuuming.
+
+---
+
 ## Extended Investigation
 
 If root cause is still not confirmed with HIGH or MEDIUM confidence:
