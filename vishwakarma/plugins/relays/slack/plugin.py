@@ -28,6 +28,21 @@ class SlackDestination:
         self._client = WebClient(token=self._token)
         return self._client
 
+    def _resolve_channel_id(self, channel: str) -> str:
+        """Resolve #channel-name to channel ID. Returns as-is if already an ID."""
+        if not channel or channel.startswith("C") or channel.startswith("D") or channel.startswith("G"):
+            return channel
+        name = channel.lstrip("#")
+        try:
+            client = self._get_client()
+            for page in client.conversations_list(types="public_channel,private_channel", limit=1000):
+                for c in page.get("channels", []):
+                    if c["name"] == name:
+                        return c["id"]
+        except Exception as e:
+            log.warning(f"Could not resolve channel '{channel}': {e}")
+        return channel  # fallback — might fail but at least chat_postMessage handles names
+
     def post_investigation(
         self,
         title: str,
@@ -41,6 +56,8 @@ class SlackDestination:
     ) -> dict:
         channel = channel or self._channel
         client = self._get_client()
+        # Resolve #channel-name to ID — files_upload_v2 requires channel ID
+        channel = self._resolve_channel_id(channel)
 
         # If posting in an existing thread (e.g., @oogway debug response),
         # post the analysis directly as thread replies — no big header announcement.
