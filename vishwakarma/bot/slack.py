@@ -413,8 +413,6 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         except Exception:
                             pass
 
-                meta = {}  # stream mode doesn't return meta directly
-
                 # Generate PDF
                 pdf_path = None
                 try:
@@ -427,10 +425,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 except Exception as e:
                     log.warning(f"PDF generation failed: {e}")
 
-                # Post result
-                from vishwakarma.plugins.relays.slack.plugin import SlackDestination
-                dest = SlackDestination({"token": config.slack_bot_token})
-                # Save to DB first to get inc_id for feedback buttons
+                # Save to DB for feedback buttons
                 inc_id = None
                 try:
                     from vishwakarma.storage.queries import save_incident
@@ -444,22 +439,61 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         source="slack",
                         labels={"slack_user": user, "slack_channel": channel},
                         tool_outputs=[],
-                        meta=meta,
+                        meta={},
                         slack_ts=thread_ts,
                         pdf_path=pdf_path,
                     )
                 except Exception as e:
                     log.warning(f"DB save failed: {e}")
 
-                dest.post_investigation(
-                    title=question[:100],
-                    analysis=analysis,
-                    source="slack",
-                    channel=channel,
-                    thread_ts=thread_ts,
-                    pdf_path=pdf_path,
-                    incident_id=inc_id,
-                )
+                # Post PDF in thread (no text dump — PDF is the deliverable)
+                if pdf_path:
+                    try:
+                        import os
+                        with open(pdf_path, "rb") as f:
+                            pdf_content = f.read()
+                        file_resp = client_sdk.files_upload_v2(
+                            channel=channel,
+                            thread_ts=thread_ts,
+                            content=pdf_content,
+                            filename=f"rca-{question[:40].replace(' ', '-')}.pdf",
+                            title=f"RCA - {question[:80]}",
+                            initial_comment=f":page_facing_up: *Investigation complete — {question[:80]}*",
+                        )
+                    except Exception as e:
+                        log.warning(f"PDF upload failed, posting text instead: {e}")
+                        pdf_path = None
+
+                # Fallback: if PDF failed, post analysis as text
+                if not pdf_path:
+                    from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
+                    slack_text = md_to_slack(strip_code_wrapper(analysis))
+                    for chunk in chunk_for_slack(slack_text):
+                        client_sdk.chat_postMessage(
+                            channel=channel, thread_ts=thread_ts, text=chunk,
+                            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
+                        )
+
+                # Feedback buttons
+                if inc_id:
+                    try:
+                        client_sdk.chat_postMessage(
+                            channel=channel, thread_ts=thread_ts,
+                            text="Was this RCA accurate?",
+                            blocks=[
+                                {"type": "section", "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"}},
+                                {
+                                    "type": "actions",
+                                    "block_id": f"rca_feedback_{inc_id[:16]}",
+                                    "elements": [
+                                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True}, "style": "primary", "action_id": "vk_rca_correct", "value": inc_id},
+                                        {"type": "button", "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True}, "style": "danger", "action_id": "vk_rca_wrong", "value": inc_id},
+                                    ],
+                                },
+                            ],
+                        )
+                    except Exception:
+                        pass
 
             except Exception as e:
                 log.error(f"Investigation failed: {e}", exc_info=True)
