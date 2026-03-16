@@ -852,23 +852,36 @@ def _fetch_thread_alarm_context(client, channel: str, thread_ts: str) -> str:
 
 
 def _help_text() -> str:
-    return """*Oogway — SRE Investigation Bot*
+    return (
+        ":turtle: *Oogway — Autonomous SRE Investigation Bot*\n\n"
 
-*Usage:*
-• `@oogway <question>` — quick chat reply (no tools)
-• `@oogway debug <question>` — full investigation + PDF report
-• `@oogway oracle <question>` — start a multi-turn investigation session (follow-ups remember context)
-• `@oogway oracle stop` — end the oracle session in this thread
-• `@oogway oracle resume <id>` — resume a previous oracle session
-• `@oogway costs` — run AWS cost report now
-• `@oogway status` — show incident stats
-• `@oogway learn [category] <fact>` — add a learning
-• `@oogway forget [category] <keyword>` — remove a learning
-• `@oogway help` — show this message
+        "*:mag: Investigation*\n"
+        "• `debug <question>` — full investigation with tools + PDF report\n"
+        "• `debug <ride/booking UUID>` — traces ride across BAP/BPP databases\n"
+        "• `oracle <question>` — multi-turn session (follow-ups remember context)\n"
+        "• `oracle stop` — end the oracle session\n"
+        "• `oracle resume <id>` — resume a previous session\n\n"
 
-*Examples:*
-• `@oogway debug why are payments pods crashing?` → full RCA with PDF
-• `@oogway oracle check RDS CPU spike from 10am` → start oracle session, then ask follow-ups in thread"""
+        "*:bar_chart: Reports*\n"
+        "• `costs` — AWS cost report with anomaly detection + forecast + PDF\n"
+        "• `status` — incident statistics\n\n"
+
+        "*:brain: Knowledge*\n"
+        "• `learn [category] <fact>` — teach me something new\n"
+        "• `forget [category] <keyword>` — remove a learning\n\n"
+
+        "*:speech_balloon: Chat*\n"
+        "• `<anything else>` — quick chat reply (no tools)\n"
+        "• `help` — this message\n\n"
+
+        "*Examples:*\n"
+        "```@oogway debug why are payments pods crashing?\n"
+        "@oogway debug why did ride f6d18e1e-... get cancelled?\n"
+        "@oogway debug RDS CPU high on customer cluster\n"
+        "@oogway oracle check RDS CPU spike from 10am\n"
+        "@oogway costs\n"
+        "@oogway learn rds atlas-customer-r1 often spikes during morning peak```"
+    )
 
 
 def _extract_root_cause(analysis: str) -> str:
