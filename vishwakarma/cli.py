@@ -520,6 +520,10 @@ def serve(
     from vishwakarma.bot.slack import start_bot
     start_bot(cfg)
 
+    # Start daily cost report scheduler
+    from vishwakarma.scheduler.cost_report import start_cost_reporter
+    start_cost_reporter(cfg)
+
     # Start FastAPI server
     from vishwakarma.server import create_app
     fastapi_app = create_app(cfg)

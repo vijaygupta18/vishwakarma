@@ -252,6 +252,17 @@ class VishwakarmaConfig:
             _env("VK_DEDUP_WINDOW", str(raw.get("dedup_window", 300)))
         )
 
+        # Cost report scheduler
+        cost_cfg = raw.get("cost_report", {})
+        self.cost_report = {
+            "enabled": _env("VK_COST_REPORT_ENABLED",
+                            str(cost_cfg.get("enabled", False))).lower() in ("true", "1", "yes"),
+            "schedule_utc": cost_cfg.get("schedule_utc", "06:30"),
+            "channel": _env("VK_COST_REPORT_CHANNEL", cost_cfg.get("channel", "")),
+            "anomaly_threshold": float(cost_cfg.get("anomaly_threshold", 0.15)),
+            "region": cost_cfg.get("region", "ap-south-1"),
+        }
+
     # ── Factory methods ────────────────────────────────────────────────────────
 
     def make_llm(self) -> VishwakarmaLLM:

@@ -6,6 +6,7 @@ Uses Slack Bolt with Socket Mode (no public URL required).
 Commands:
   @vishwakarma <question>     — investigate something
   @vishwakarma check <topic>  — quick health check
+  @vishwakarma costs          — run AWS cost report now
   @vishwakarma status         — show investigation status
   @vishwakarma help           — show help
 """
@@ -78,6 +79,19 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 say(text=f"📊 *Incident Stats*\n{_format_stats(stats)}", thread_ts=thread_ts)
             except Exception as e:
                 say(text=f"❌ Failed to get stats: {e}", thread_ts=thread_ts)
+            return
+
+        if question_lower in ("costs", "cost report", "cost"):
+            say(text="💰 Running AWS cost report...", thread_ts=thread_ts)
+            def run_cost_report():
+                try:
+                    from vishwakarma.scheduler.cost_report import _generate_and_post
+                    _generate_and_post(config)
+                    say(text="✅ Cost report posted!", thread_ts=thread_ts)
+                except Exception as e:
+                    log.error(f"On-demand cost report failed: {e}", exc_info=True)
+                    say(text=f"❌ Cost report failed: {str(e)[:200]}", thread_ts=thread_ts)
+            threading.Thread(target=run_cost_report, daemon=True).start()
             return
 
         # learn [category] <fact>
@@ -753,6 +767,7 @@ def _help_text() -> str:
 • `@oogway oracle <question>` — start a multi-turn investigation session (follow-ups remember context)
 • `@oogway oracle stop` — end the oracle session in this thread
 • `@oogway oracle resume <id>` — resume a previous oracle session
+• `@oogway costs` — run AWS cost report now
 • `@oogway status` — show incident stats
 • `@oogway learn [category] <fact>` — add a learning
 • `@oogway forget [category] <keyword>` — remove a learning

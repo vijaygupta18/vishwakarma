@@ -1,0 +1,35 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "CostExplorerReadOnly",
+            "Effect": "Allow",
+            "Action": [
+                "ce:GetCostAndUsage",
+                "ce:GetCostForecast"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "CloudWatchMetricsReadOnly",
+            "Effect": "Allow",
+            "Action": [
+                "cloudwatch:GetMetricStatistics",
+                "cloudwatch:GetMetricData",
+                "cloudwatch:ListMetrics"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "DescribeResourcesForCostCorrelation",
+            "Effect": "Allow",
+            "Action": [
+                "elasticloadbalancing:DescribeLoadBalancers",
+                "rds:DescribeDBInstances",
+                "elasticache:DescribeCacheClusters",
+                "ec2:DescribeNatGateways"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
