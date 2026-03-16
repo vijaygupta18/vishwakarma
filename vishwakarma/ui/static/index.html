@@ -22,7 +22,7 @@
       --danger:   #e05555;
       --info:     #5090e0;
       --radius:   6px;
-      --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, monospace;
+      --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     }
 
     html, body {
@@ -40,6 +40,21 @@
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
+    /* ── Progress bar ───────────────────────────────────────────── */
+    #nprogress {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--primary);
+      z-index: 9999;
+      transform-origin: left;
+      transform: scaleX(0);
+      transition: transform 0.2s ease;
+      border-radius: 0 1px 1px 0;
+    }
+    #nprogress.active { transform: scaleX(0.7); }
+    #nprogress.done   { transform: scaleX(1); opacity: 0; transition: transform 0.15s ease, opacity 0.3s ease 0.1s; }
+
     /* ── Navbar ────────────────────────────────────────────────── */
     .navbar {
       display: flex;
@@ -52,13 +67,29 @@
       position: fixed;
       top: 0; left: 0; right: 0;
       z-index: 100;
+      gap: 16px;
+    }
+    .navbar-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
     .navbar-logo {
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.1em;
       color: var(--primary);
       text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .navbar-logo span {
+      opacity: 0.6;
+      font-weight: 400;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      text-transform: none;
+      margin-left: 6px;
     }
     .navbar-tabs {
       display: flex;
@@ -80,6 +111,12 @@
       color: var(--primary);
       border-color: var(--primary);
       background: rgba(124, 111, 247, 0.1);
+    }
+    .navbar-clock {
+      font-size: 12px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     /* ── Layout ────────────────────────────────────────────────── */
@@ -137,7 +174,7 @@
       border-left-color: var(--primary);
       color: var(--primary);
     }
-    .cat-name { font-weight: 500; text-transform: capitalize; }
+    .cat-name { font-weight: 500; text-transform: capitalize; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cat-badge {
       font-size: 11px;
       background: var(--surface2);
@@ -146,6 +183,7 @@
       border-radius: 10px;
       min-width: 24px;
       text-align: center;
+      flex-shrink: 0;
     }
     .cat-item.active .cat-badge {
       background: rgba(124, 111, 247, 0.2);
@@ -208,13 +246,14 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 16px 24px;
+      padding: 14px 24px;
       border-bottom: 1px solid var(--border);
       background: var(--surface);
       flex-shrink: 0;
+      gap: 12px;
     }
     .learn-header h2 {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 600;
       text-transform: capitalize;
       display: flex;
@@ -226,7 +265,9 @@
       border-radius: 50%;
       background: var(--primary);
       display: inline-block;
+      flex-shrink: 0;
     }
+    .learn-header-actions { display: flex; gap: 6px; }
 
     .learn-body {
       flex: 1;
@@ -309,7 +350,7 @@
       font: inherit;
       font-size: 13px;
       cursor: pointer;
-      transition: background 0.15s, border-color 0.15s, color 0.15s;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
       white-space: nowrap;
     }
     .btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -331,6 +372,17 @@
       border-color: var(--border);
     }
     .btn-ghost:hover:not(:disabled) { color: var(--text); background: var(--surface2); }
+    .btn-icon {
+      background: none;
+      border: none;
+      color: var(--muted);
+      padding: 5px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+      line-height: 1;
+    }
+    .btn-icon:hover { color: var(--text); background: var(--surface2); }
     .btn-sm { padding: 5px 10px; font-size: 12px; }
 
     /* ── Markdown ───────────────────────────────────────────────── */
@@ -393,8 +445,8 @@
     .incidents-toolbar {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 14px 24px;
+      gap: 8px;
+      padding: 12px 20px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
@@ -402,14 +454,14 @@
     }
     .incidents-toolbar input[type="search"] {
       flex: 1;
-      min-width: 200px;
+      min-width: 180px;
       background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       color: var(--text);
       font: inherit;
       font-size: 13px;
-      padding: 8px 12px 8px 32px;
+      padding: 7px 12px 7px 32px;
       outline: none;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23808098' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
       background-repeat: no-repeat;
@@ -425,7 +477,7 @@
       color: var(--text);
       font: inherit;
       font-size: 13px;
-      padding: 8px 28px 8px 10px;
+      padding: 7px 28px 7px 10px;
       outline: none;
       cursor: pointer;
       appearance: none;
@@ -435,6 +487,12 @@
       transition: border-color 0.15s;
     }
     .incidents-toolbar select:focus { border-color: var(--primary); }
+    .inc-count {
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      margin-left: auto;
+    }
 
     /* Table */
     .incidents-table-wrap {
@@ -464,21 +522,25 @@
       white-space: nowrap;
     }
     .incidents-table td {
-      padding: 11px 16px;
+      padding: 10px 16px;
       border-bottom: 1px solid var(--border);
       vertical-align: middle;
     }
     .incidents-table tbody tr {
       cursor: pointer;
       transition: background 0.1s;
+      border-left: 3px solid transparent;
     }
     .incidents-table tbody tr:hover { background: var(--surface2); }
-    .incidents-table tbody tr.selected { background: rgba(124, 111, 247, 0.1); }
+    .incidents-table tbody tr.selected { background: rgba(124, 111, 247, 0.1); border-left-color: var(--primary); }
+    .incidents-table tbody tr.sev-critical { border-left-color: rgba(224,85,85,0.5); }
+    .incidents-table tbody tr.sev-warning  { border-left-color: rgba(240,160,80,0.5); }
+    .incidents-table tbody tr.sev-info     { border-left-color: rgba(80,144,224,0.5); }
 
     .inc-title {
       font-weight: 500;
       color: var(--text);
-      max-width: 340px;
+      max-width: 360px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -492,7 +554,12 @@
       padding: 2px 7px;
       white-space: nowrap;
     }
-    .inc-date { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .inc-date {
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+      cursor: default;
+    }
     .inc-dur  { font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .inc-steps { font-size: 13px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
@@ -557,8 +624,8 @@
     .drawer-overlay.open { display: block; }
     .drawer {
       position: fixed;
-      top: 0; right: -680px; bottom: 0;
-      width: min(680px, 100vw);
+      top: 0; right: -720px; bottom: 0;
+      width: min(720px, 100vw);
       background: var(--surface);
       border-left: 1px solid var(--border);
       display: flex;
@@ -572,7 +639,7 @@
       display: flex;
       align-items: flex-start;
       gap: 12px;
-      padding: 20px 20px 16px;
+      padding: 18px 20px 14px;
       border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
@@ -583,16 +650,21 @@
       line-height: 1.4;
       color: var(--text);
     }
+    .drawer-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
     .drawer-close {
       background: none;
       border: none;
       color: var(--muted);
-      font-size: 20px;
+      font-size: 18px;
       cursor: pointer;
       line-height: 1;
-      padding: 2px 4px;
+      padding: 4px 6px;
       border-radius: 4px;
-      flex-shrink: 0;
       transition: color 0.15s, background 0.15s;
     }
     .drawer-close:hover { color: var(--text); background: var(--surface2); }
@@ -632,6 +704,44 @@
       color: var(--muted);
     }
 
+    /* ── Toast notifications ────────────────────────────────────── */
+    .toast-container {
+      position: fixed;
+      top: 62px;
+      right: 16px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 16px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 500;
+      min-width: 240px;
+      max-width: 360px;
+      pointer-events: all;
+      border: 1px solid;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+      animation: toastIn 0.2s ease;
+    }
+    .toast.removing { animation: toastOut 0.2s ease forwards; }
+    .toast-success { background: rgba(76,175,130,0.15); border-color: rgba(76,175,130,0.35); color: #4caf82; }
+    .toast-error   { background: rgba(224,85,85,0.15);  border-color: rgba(224,85,85,0.35);  color: #e07070; }
+    .toast-info    { background: rgba(80,144,224,0.15); border-color: rgba(80,144,224,0.35); color: #5090e0; }
+    .toast-icon    { font-size: 15px; flex-shrink: 0; }
+    .toast-msg     { flex: 1; color: var(--text); }
+    @keyframes toastIn  { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes toastOut { from { opacity: 1; transform: translateX(0); }    to { opacity: 0; transform: translateX(20px); } }
+
+    /* ── Copy button feedback ───────────────────────────────────── */
+    .copy-btn-copied { color: var(--success) !important; }
+
     /* ── Spinner ────────────────────────────────────────────────── */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner {
@@ -641,6 +751,20 @@
       border-radius: 50%;
       animation: spin 0.7s linear infinite;
       display: inline-block;
+      flex-shrink: 0;
+    }
+
+    /* ── Keyboard shortcut hint ─────────────────────────────────── */
+    .kbd {
+      display: inline-block;
+      font-size: 10px;
+      font-family: monospace;
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--muted);
+      background: var(--surface2);
+      vertical-align: middle;
     }
 
     /* ── Responsive ─────────────────────────────────────────────── */
@@ -649,18 +773,28 @@
       .incidents-toolbar { gap: 6px; }
       .incidents-table th:nth-child(3),
       .incidents-table td:nth-child(3) { display: none; }
+      .navbar-clock { display: none; }
     }
   </style>
 </head>
 <body>
 
+<!-- ── Progress bar ───────────────────────────────────────────────────── -->
+<div id="nprogress"></div>
+
+<!-- ── Toast container ───────────────────────────────────────────────── -->
+<div class="toast-container" id="toast-container"></div>
+
 <!-- ── Navbar ─────────────────────────────────────────────────────────── -->
 <nav class="navbar">
-  <div class="navbar-logo">⚡ VISHWAKARMA</div>
+  <div class="navbar-left">
+    <div class="navbar-logo">⚡ Vishwakarma<span>SRE Dashboard</span></div>
+  </div>
   <div class="navbar-tabs">
     <button class="tab-btn active" id="tab-learnings" onclick="switchTab('learnings')">Learnings</button>
     <button class="tab-btn" id="tab-incidents" onclick="switchTab('incidents')">Incidents</button>
   </div>
+  <div class="navbar-clock" id="navbar-clock"></div>
 </nav>
 
 <!-- ── App ────────────────────────────────────────────────────────────── -->
@@ -697,13 +831,16 @@
       <div class="learn-main">
         <div class="learn-header">
           <h2 id="learn-title"><span class="cat-dot"></span> <span id="learn-title-text">—</span></h2>
-          <button class="btn btn-ghost btn-sm" id="edit-btn" onclick="enterEditMode()">Edit</button>
+          <div class="learn-header-actions">
+            <button class="btn btn-ghost btn-sm" id="edit-btn" onclick="enterEditMode()" style="display:none">Edit</button>
+          </div>
         </div>
 
         <div class="learn-body" id="learn-body">
           <div class="empty-state">
             <div class="empty-icon">📖</div>
             <div class="empty-msg">Select a category to view learnings</div>
+            <div class="empty-sub">Learnings help Vishwakarma diagnose recurring incidents faster</div>
           </div>
         </div>
 
@@ -713,11 +850,11 @@
           <button class="btn btn-primary btn-sm" onclick="saveEdit()">Save</button>
         </div>
 
-        <div class="add-fact-bar" id="add-fact-bar">
+        <div class="add-fact-bar" id="add-fact-bar" style="display:none">
           <input
             type="text"
             id="fact-input"
-            placeholder="Add a new learned fact…"
+            placeholder="Add a new learned fact… (press Enter)"
             onkeydown="if(event.key==='Enter') addFact()"
           />
           <button class="btn btn-primary btn-sm" onclick="addFact()">Add</button>
@@ -735,7 +872,7 @@
         <input
           type="search"
           id="inc-search"
-          placeholder="Search incidents…"
+          placeholder="Search incidents… (/)"
           oninput="debouncedSearch()"
         />
         <select id="inc-source" onchange="loadIncidents(true)">
@@ -748,6 +885,10 @@
           <option value="open">Open</option>
           <option value="resolved">Resolved</option>
         </select>
+        <button class="btn-icon" onclick="loadIncidents(true)" title="Refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <span class="inc-count" id="inc-count"></span>
       </div>
 
       <div id="inc-error" style="display:none"></div>
@@ -756,7 +897,7 @@
         <div class="empty-state" id="inc-empty" style="display:none">
           <div class="empty-icon">🔍</div>
           <div class="empty-msg">No incidents found</div>
-          <div class="empty-sub">Try adjusting your filters</div>
+          <div class="empty-sub">Try adjusting your filters or search query</div>
         </div>
         <table class="incidents-table" id="inc-table" style="display:none">
           <thead>
@@ -787,7 +928,12 @@
 <aside class="drawer" id="inc-drawer">
   <div class="drawer-header">
     <div class="drawer-title" id="drawer-title">—</div>
-    <button class="drawer-close" onclick="closeDrawer()">×</button>
+    <div class="drawer-header-actions">
+      <button class="btn-icon" id="copy-rca-btn" onclick="copyRCA()" title="Copy RCA">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
+      <button class="drawer-close" onclick="closeDrawer()" title="Close (Esc)">×</button>
+    </div>
   </div>
   <div class="drawer-meta" id="drawer-meta"></div>
   <div class="drawer-body" id="drawer-body">
@@ -797,12 +943,51 @@
 
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
-let _activeCategory = null;
-let _editOriginal   = null;
-let _incOffset      = 0;
-let _incLimit       = 50;
-let _incHasMore     = false;
-let _searchTimer    = null;
+let _activeCategory   = null;
+let _editOriginal     = null;
+let _incOffset        = 0;
+let _incLimit         = 50;
+let _incHasMore       = false;
+let _incTotal         = 0;
+let _searchTimer      = null;
+let _drawerAnalysis   = '';
+let _incLoaded        = false;
+
+// ── Progress bar ──────────────────────────────────────────────────────────────
+function npStart() {
+  const el = document.getElementById('nprogress');
+  el.className = 'active';
+}
+function npDone() {
+  const el = document.getElementById('nprogress');
+  el.className = 'done';
+  setTimeout(() => { el.className = ''; }, 400);
+}
+
+// ── Toast system ──────────────────────────────────────────────────────────────
+function toast(msg, type = 'info', duration = 3000) {
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  const container = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.innerHTML = `<span class="toast-icon">${icons[type] || 'ℹ'}</span><span class="toast-msg">${escHtml(msg)}</span>`;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('removing');
+    setTimeout(() => el.remove(), 200);
+  }, duration);
+}
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+function tickClock() {
+  const el = document.getElementById('navbar-clock');
+  if (!el) return;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  el.textContent = `${hh}:${mm}:${ss}`;
+}
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -810,12 +995,16 @@ function switchTab(name) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   document.getElementById('content-' + name).classList.add('active');
-  if (name === 'incidents' && _incOffset === 0) loadIncidents(true);
+  if (name === 'incidents' && !_incLoaded) {
+    _incLoaded = true;
+    loadIncidents(true);
+  }
 }
 
 // ── Learnings ─────────────────────────────────────────────────────────────────
 
 async function loadCategories() {
+  npStart();
   try {
     const res = await fetch('/api/learnings');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -827,6 +1016,8 @@ async function loadCategories() {
   } catch (err) {
     const list = document.getElementById('cat-list');
     list.innerHTML = `<div style="padding:12px 16px;color:var(--danger);font-size:12px">Failed to load: ${escHtml(err.message)}</div>`;
+  } finally {
+    npDone();
   }
 }
 
@@ -839,7 +1030,7 @@ function renderSidebar(categories) {
     el.id = 'cat-' + cat.category;
     el.onclick = () => selectCategory(cat.category);
     el.innerHTML = `
-      <span class="cat-name">${escHtml(cat.category)}</span>
+      <span class="cat-name" title="${escHtml(cat.category)}">${escHtml(cat.category)}</span>
       <span class="cat-badge" id="badge-${escHtml(cat.category)}">${cat.fact_count}</span>
     `;
     list.appendChild(el);
@@ -847,10 +1038,8 @@ function renderSidebar(categories) {
 }
 
 async function selectCategory(cat) {
-  // Cancel edit mode if open
   if (_editOriginal !== null) cancelEdit();
 
-  // Update sidebar highlight
   document.querySelectorAll('.cat-item').forEach(el => el.classList.remove('active'));
   const catEl = document.getElementById('cat-' + cat);
   if (catEl) catEl.classList.add('active');
@@ -863,6 +1052,7 @@ async function selectCategory(cat) {
   const body = document.getElementById('learn-body');
   body.innerHTML = '<div style="display:flex;align-items:center;gap:10px;color:var(--muted);padding:24px"><span class="spinner"></span> Loading…</div>';
 
+  npStart();
   try {
     const res = await fetch(`/api/learnings/${encodeURIComponent(cat)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -870,6 +1060,8 @@ async function selectCategory(cat) {
     renderLearnBody(data.content || '');
   } catch (err) {
     body.innerHTML = `<div class="error-bar">Failed to load learnings: ${escHtml(err.message)}</div>`;
+  } finally {
+    npDone();
   }
 }
 
@@ -883,15 +1075,12 @@ function renderLearnBody(markdown) {
 }
 
 function enterEditMode() {
-  const body = document.getElementById('learn-body');
-  const current = body.querySelector('.markdown-render');
-  // Store original content by re-fetching is cleaner, but we can also keep it via state
-  // We'll fetch fresh to ensure accuracy
   _fetchAndOpenEditor();
 }
 
 async function _fetchAndOpenEditor() {
   if (!_activeCategory) return;
+  npStart();
   try {
     const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -912,9 +1101,11 @@ async function _fetchAndOpenEditor() {
     const actions = document.getElementById('edit-actions');
     actions.classList.add('visible');
     document.getElementById('edit-confirm-text').textContent =
-      `Save changes to ${_activeCategory} learnings?`;
+      `Editing ${_activeCategory} learnings`;
   } catch (err) {
-    showBodyError(`Failed to open editor: ${err.message}`);
+    toast(`Failed to open editor: ${err.message}`, 'error');
+  } finally {
+    npDone();
   }
 }
 
@@ -923,7 +1114,6 @@ function cancelEdit() {
   document.getElementById('edit-btn').style.display = '';
   document.getElementById('add-fact-bar').style.display = '';
   document.getElementById('edit-actions').classList.remove('visible');
-  // Re-render the stored content
   if (_activeCategory) selectCategory(_activeCategory);
 }
 
@@ -936,6 +1126,7 @@ async function saveEdit() {
   const saveBtn = document.querySelector('#edit-actions .btn-primary');
   saveBtn.disabled = true;
   saveBtn.textContent = 'Saving…';
+  npStart();
 
   try {
     const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}`, {
@@ -950,11 +1141,13 @@ async function saveEdit() {
     document.getElementById('edit-actions').classList.remove('visible');
     renderLearnBody(content);
     await refreshCategoryBadge(_activeCategory);
+    toast(`Saved ${_activeCategory} learnings`, 'success');
   } catch (err) {
-    showBodyError(`Save failed: ${err.message}`);
+    toast(`Save failed: ${err.message}`, 'error');
   } finally {
     saveBtn.disabled = false;
     saveBtn.textContent = 'Save';
+    npDone();
   }
 }
 
@@ -967,6 +1160,7 @@ async function addFact() {
   const addBtn = input.nextElementSibling;
   addBtn.disabled = true;
   addBtn.textContent = '…';
+  npStart();
 
   try {
     const res = await fetch(`/api/learnings/${encodeURIComponent(_activeCategory)}/append`, {
@@ -978,11 +1172,13 @@ async function addFact() {
     input.value = '';
     await selectCategory(_activeCategory);
     await refreshCategoryBadge(_activeCategory);
+    toast('Fact added', 'success');
   } catch (err) {
-    showBodyError(`Failed to add fact: ${err.message}`);
+    toast(`Failed to add fact: ${err.message}`, 'error');
   } finally {
     addBtn.disabled = false;
     addBtn.textContent = 'Add';
+    npDone();
   }
 }
 
@@ -1007,6 +1203,7 @@ async function createCategory() {
   const btn = document.getElementById('create-cat-btn');
   btn.disabled = true;
   btn.textContent = '…';
+  npStart();
 
   try {
     const res = await fetch(`/api/learnings/${encodeURIComponent(name)}`, { method: 'POST' });
@@ -1015,12 +1212,12 @@ async function createCategory() {
       throw new Error(data.detail || `HTTP ${res.status}`);
     }
     hideNewCatForm();
-    // Reload sidebar and switch to new category
     const listRes = await fetch('/api/learnings');
     if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
     const data = await listRes.json();
     renderSidebar(data.categories || []);
     selectCategory(name);
+    toast(`Created category "${name}"`, 'success');
   } catch (err) {
     const hint = document.querySelector('.new-cat-hint');
     hint.style.color = 'var(--danger)';
@@ -1032,6 +1229,7 @@ async function createCategory() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Create';
+    npDone();
   }
 }
 
@@ -1047,14 +1245,6 @@ async function refreshCategoryBadge(cat) {
   } catch (_) {}
 }
 
-function showBodyError(msg) {
-  const body = document.getElementById('learn-body');
-  const div = document.createElement('div');
-  div.className = 'error-bar';
-  div.textContent = msg;
-  body.prepend(div);
-}
-
 // ── Incidents ─────────────────────────────────────────────────────────────────
 
 function debouncedSearch() {
@@ -1068,6 +1258,7 @@ async function loadIncidents(reset = true) {
     document.getElementById('inc-tbody').innerHTML = '';
     document.getElementById('inc-table').style.display = 'none';
     document.getElementById('inc-empty').style.display = 'none';
+    document.getElementById('inc-count').textContent = '';
   }
 
   const search = document.getElementById('inc-search').value.trim();
@@ -1085,27 +1276,41 @@ async function loadIncidents(reset = true) {
   errorEl.style.display = 'none';
   errorEl.innerHTML = '';
 
+  npStart();
   try {
     const res = await fetch('/api/incidents?' + params.toString());
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const incidents = data.incidents || [];
+    const total = data.total != null ? data.total : null;
 
     if (reset && incidents.length === 0) {
       document.getElementById('inc-empty').style.display = 'flex';
       document.getElementById('inc-table').style.display = 'none';
       document.getElementById('load-more-bar').style.display = 'none';
+      document.getElementById('inc-count').textContent = '0 incidents';
       return;
     }
 
     renderIncidentRows(incidents);
     _incOffset += incidents.length;
     _incHasMore = incidents.length === _incLimit;
+
+    // Update count
+    if (total != null) {
+      document.getElementById('inc-count').textContent = `${total} incident${total !== 1 ? 's' : ''}`;
+    } else {
+      const shown = _incOffset;
+      document.getElementById('inc-count').textContent = _incHasMore ? `${shown}+ incidents` : `${shown} incident${shown !== 1 ? 's' : ''}`;
+    }
+
     document.getElementById('inc-table').style.display = '';
     document.getElementById('load-more-bar').style.display = _incHasMore ? '' : 'none';
   } catch (err) {
     errorEl.innerHTML = `<div class="error-bar">Failed to load incidents: ${escHtml(err.message)}</div>`;
     errorEl.style.display = 'block';
+  } finally {
+    npDone();
   }
 }
 
@@ -1122,12 +1327,17 @@ function renderIncidentRows(incidents) {
                      : sev === 'info'     ? 'badge-info'
                      : 'badge-unknown';
 
+    if (sev === 'critical') tr.classList.add('sev-critical');
+    else if (sev === 'warning') tr.classList.add('sev-warning');
+    else if (sev === 'info') tr.classList.add('sev-info');
+
     const meta = inc.meta || {};
     const duration = meta.duration_seconds != null ? formatDuration(meta.duration_seconds) : '—';
     const steps    = meta.steps             != null ? meta.steps                            : '—';
+    const { rel, abs } = formatRelativeDate(inc.created_at);
 
     tr.innerHTML = `
-      <td class="inc-date">${formatDate(inc.created_at)}</td>
+      <td class="inc-date" title="${escHtml(abs)}">${escHtml(rel)}</td>
       <td><div class="inc-title" title="${escHtml(inc.title || '')}">${escHtml(inc.title || '—')}</div></td>
       <td><span class="inc-source">${escHtml(inc.source || '—')}</span></td>
       <td><span class="badge ${badgeClass}">${escHtml(inc.severity || 'unknown')}</span></td>
@@ -1139,7 +1349,6 @@ function renderIncidentRows(incidents) {
 }
 
 async function viewIncident(id) {
-  // Highlight row
   document.querySelectorAll('#inc-tbody tr').forEach(r => {
     r.classList.toggle('selected', r.dataset.id === String(id));
   });
@@ -1148,12 +1357,14 @@ async function viewIncident(id) {
   const drawer  = document.getElementById('inc-drawer');
   overlay.classList.add('open');
   drawer.classList.add('open');
+  _drawerAnalysis = '';
 
   document.getElementById('drawer-title').textContent = '…';
   document.getElementById('drawer-meta').innerHTML = '';
   document.getElementById('drawer-body').innerHTML =
     '<div class="drawer-loading"><span class="spinner"></span></div>';
 
+  npStart();
   try {
     const res = await fetch(`/api/incidents/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1163,11 +1374,14 @@ async function viewIncident(id) {
     document.getElementById('drawer-title').textContent = 'Error';
     document.getElementById('drawer-body').innerHTML =
       `<div class="error-bar">Failed to load incident: ${escHtml(err.message)}</div>`;
+  } finally {
+    npDone();
   }
 }
 
 function renderDrawer(inc) {
   document.getElementById('drawer-title').textContent = inc.title || '(no title)';
+  _drawerAnalysis = inc.analysis || '';
 
   const meta   = inc.meta || {};
   const sev    = (inc.severity || 'unknown').toLowerCase();
@@ -1177,11 +1391,12 @@ function renderDrawer(inc) {
                    : 'badge-unknown';
   const duration = meta.duration_seconds != null ? formatDuration(meta.duration_seconds) : '—';
   const steps    = meta.steps             != null ? meta.steps                            : '—';
+  const { rel, abs } = formatRelativeDate(inc.created_at);
 
   document.getElementById('drawer-meta').innerHTML = `
     <span class="meta-chip"><span class="chip-label">Source</span> ${escHtml(inc.source || '—')}</span>
     <span class="meta-chip"><span class="badge ${badgeClass}">${escHtml(inc.severity || 'unknown')}</span></span>
-    <span class="meta-chip"><span class="chip-label">Date</span> ${formatDate(inc.created_at)}</span>
+    <span class="meta-chip" title="${escHtml(abs)}"><span class="chip-label">Date</span> ${escHtml(rel)}</span>
     <span class="meta-chip"><span class="chip-label">Steps</span> ${escHtml(String(steps))}</span>
     <span class="meta-chip"><span class="chip-label">Duration</span> ${escHtml(duration)}</span>
   `;
@@ -1195,11 +1410,58 @@ function renderDrawer(inc) {
   body.appendChild(div);
 }
 
+async function copyRCA() {
+  if (!_drawerAnalysis) return;
+  const btn = document.getElementById('copy-rca-btn');
+  try {
+    await navigator.clipboard.writeText(_drawerAnalysis);
+    btn.classList.add('copy-btn-copied');
+    btn.title = 'Copied!';
+    toast('RCA copied to clipboard', 'success', 2000);
+    setTimeout(() => {
+      btn.classList.remove('copy-btn-copied');
+      btn.title = 'Copy RCA';
+    }, 2000);
+  } catch (_) {
+    toast('Copy failed — try selecting text manually', 'error');
+  }
+}
+
 function closeDrawer() {
   document.getElementById('drawer-overlay').classList.remove('open');
   document.getElementById('inc-drawer').classList.remove('open');
   document.querySelectorAll('#inc-tbody tr').forEach(r => r.classList.remove('selected'));
+  _drawerAnalysis = '';
 }
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  // Esc: close drawer
+  if (e.key === 'Escape') {
+    const drawer = document.getElementById('inc-drawer');
+    if (drawer.classList.contains('open')) { closeDrawer(); return; }
+    const editActions = document.getElementById('edit-actions');
+    if (editActions.classList.contains('visible')) { cancelEdit(); return; }
+  }
+  // /: focus search (when not already in an input)
+  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+    const search = document.getElementById('inc-search');
+    if (search) {
+      e.preventDefault();
+      switchTab('incidents');
+      search.focus();
+      search.select();
+    }
+  }
+  // l: switch to Learnings
+  if (e.key === 'l' && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+    switchTab('learnings');
+  }
+  // i: switch to Incidents
+  if (e.key === 'i' && !['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)) {
+    switchTab('incidents');
+  }
+});
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -1212,25 +1474,35 @@ function renderMarkdown(text) {
   }
 }
 
-function formatDate(ts) {
-  if (!ts) return '—';
+function formatRelativeDate(ts) {
+  if (!ts) return { rel: '—', abs: '' };
   try {
     let d;
-    // ISO string or unix timestamp
-    if (typeof ts === 'number') {
-      d = new Date(ts * 1000);
-    } else {
-      d = new Date(ts);
+    if (typeof ts === 'number') d = new Date(ts * 1000);
+    else d = new Date(ts);
+    if (isNaN(d.getTime())) return { rel: String(ts), abs: '' };
+
+    const now = Date.now();
+    const diffMs = now - d.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+
+    let rel;
+    if (diffSec < 60)          rel = 'just now';
+    else if (diffSec < 3600)   rel = `${Math.floor(diffSec / 60)}m ago`;
+    else if (diffSec < 86400)  rel = `${Math.floor(diffSec / 3600)}h ago`;
+    else if (diffSec < 604800) rel = `${Math.floor(diffSec / 86400)}d ago`;
+    else {
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      rel = `${months[d.getMonth()]} ${d.getDate()}`;
     }
-    if (isNaN(d.getTime())) return String(ts);
+
+    // Full absolute for tooltip
     const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const mon  = months[d.getMonth()];
-    const day  = d.getDate();
-    const hh   = String(d.getHours()).padStart(2, '0');
-    const mm   = String(d.getMinutes()).padStart(2, '0');
-    return `${mon} ${day}, ${hh}:${mm}`;
+    const abs = `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+    return { rel, abs };
   } catch (_) {
-    return String(ts);
+    return { rel: String(ts), abs: '' };
   }
 }
 
@@ -1255,6 +1527,8 @@ function escHtml(str) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadCategories();
+  tickClock();
+  setInterval(tickClock, 1000);
 });
 </script>
 </body>
