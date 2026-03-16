@@ -594,7 +594,7 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
     lines.append("| Service | Yesterday ($) | Day Before ($) | Day-over-Day | 7-day Avg ($) | vs Avg |")
     lines.append("|---------|---------------|----------------|--------------|---------------|--------|")
 
-    for svc, cost in svc_yesterday[:10]:
+    for svc, cost in svc_yesterday[:15]:
         svc_avg = svc_avgs.get(svc, 0)
         pct_avg = ((cost - svc_avg) / svc_avg * 100) if svc_avg > 0 else 0
         dollar_diff = cost - svc_avg
