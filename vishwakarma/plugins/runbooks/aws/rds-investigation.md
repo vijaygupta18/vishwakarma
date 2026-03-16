@@ -128,6 +128,13 @@ Look for:
 - `Lock:relation` or `Lock:tuple` → lock contention
 - Top SQL > 40% db.load → single query is the culprit
 
+**If PI returns empty Keys after 2 attempts with different time windows → check slow query logs:**
+```
+aws rds describe-db-log-files --db-instance-identifier <instance-id> --region <region>
+aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
+  --log-file-name <most-recent-slow-query-log> --region <region>
+```
+
 ### Method B: Direct Database Access (FALLBACK — if PI fails or need deeper digging)
 
 Run `learnings_read(database)` first to get the full PostgreSQL diagnostic query templates.
