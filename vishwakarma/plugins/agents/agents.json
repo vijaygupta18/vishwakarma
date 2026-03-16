@@ -4,14 +4,14 @@
       "id": "alb-5xx-investigation",
       "update_date": "2026-03-12",
       "description": "Investigate AWS ALB 5xx CloudWatch alarms. Identifies which API endpoints are returning 5xx errors using CloudWatch metrics, then queries Elasticsearch Istio and application logs to find the failing APIs, error messages, and root cause. For alerts: ALB5xxErrors, HTTPCode_Target_5XX_Count, HTTPCode_ELB_5XX_Count.",
-      "keywords": ["alb", "5xx", "elb", "target", "http", "gateway", "latency"],
+      "keywords": ["alb", "5xx", "4xx", "elb", "target", "http", "gateway", "latency", "unhealthy", "ssl"],
       "runbook": "../runbooks/aws/alb-5xx-investigation.md"
     },
     {
       "id": "rds-investigation",
       "update_date": "2026-03-12",
       "description": "Investigate AWS RDS alerts: high CPU utilization, high database connections, low freeable memory, high IOPS, replication lag. Uses CloudWatch, Performance Insights, slow query logs, and Kubernetes pod logs. For alerts: RDSHighCPU, RDSHighConnections, RDSLowMemory, RDSReplicationLag.",
-      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "memory", "db"],
+      "keywords": ["rds", "cpu", "database", "postgres", "connections", "iops", "replication", "memory", "db", "freeable", "swap", "replica", "writer", "reader"],
       "runbook": "../runbooks/aws/rds-investigation.md"
     },
     {
@@ -25,14 +25,14 @@
       "id": "ny-system-alerts",
       "update_date": "2026-03-12",
       "description": "Investigate SRE Platform system-level alerts: login success rate drop, drainer lag (customer/driver), producer not producing, system config parse failure, Multimodal 5xx errors, Trinetra job failures, drainer pod unavailability. Alert labels: ny-system-alerts. Covers: LoginSuccessRate, ProducerNotProducing, NoDriverDrainerRunning, DriverDrainerLagIncreasing, SystemConfigParseFailure, TrinetraTriggered, Multimodal5xx.",
-      "keywords": ["login", "drainer", "producer", "multimodal", "trinetra", "config", "parse"],
+      "keywords": ["login", "drainer", "producer", "multimodal", "trinetra", "config", "parse", "pod", "running"],
       "runbook": "../runbooks/custom/ny-system-alerts.md"
     },
     {
       "id": "ny-pt-alerts",
       "update_date": "2026-03-13",
       "description": "Investigate SRE Platform Public Transit alerts: CMRL API errors, CRIS API errors, PT external API errors, GRPC notifications dropped, GTFS In-Memory Server 5xx, refunds increased. Alert labels: ny-pt-alerts. Covers: CMRLAPIGivingErrors, CrisAPIGivingErrors, PTExternalAPIErrorsIncreased, GRPCDown, GIMS5xx, Refunds increased.",
-      "keywords": ["cmrl", "cris", "grpc", "gtfs", "gims", "refund", "pt-external", "notification", "public-transit", "public-transport"],
+      "keywords": ["cmrl", "cris", "grpc", "gtfs", "gims", "refund", "pt-external", "ptexternal", "notification", "public-transit", "public-transport", "external"],
       "runbook": "../runbooks/custom/ny-pt-alerts.md"
     },
     {

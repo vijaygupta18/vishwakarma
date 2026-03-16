@@ -45,6 +45,13 @@ aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name E
 
 Run this for every cluster. Identify which clusters have high CPU (> 50%) or other anomalies. Focus the rest of the investigation on those.
 
+**7-day baseline adversarial check (run in parallel with CPU checks):**
+To distinguish a real incident from a recurring daily pattern (e.g. batch jobs, daily spikes):
+```
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=<replication-group-id> --start-time <7 days ago ISO8601> --end-time <now ISO8601> --period 3600 --statistics Average Maximum --region <region>
+```
+If today's CPU spike matches the 7-day pattern → recurring baseline, not a new incident. State this in your RCA.
+
 ### Step 3: Check All Key Metrics on the Affected Cluster(s)
 For each affected cluster found in Step 2:
 ```

@@ -145,6 +145,7 @@ class InvestigationEngine:
             messages, did_compact = compact_messages(messages, llm=self.llm)
             if did_compact:
                 compactions += 1
+                guard.reset()  # Allow retries after compaction — history is gone
 
             # Call LLM
             response = self.llm.complete(
@@ -404,6 +405,7 @@ class InvestigationEngine:
             messages, did_compact = compact_messages(messages, llm=self.llm)
             if did_compact:
                 compactions += 1
+                guard.reset()  # Allow retries after compaction — history is gone
                 yield {"type": "compaction", "step": step}
 
             # Stream from LLM
@@ -438,6 +440,12 @@ class InvestigationEngine:
             parsed: list[tuple[str, str, dict]] = []  # (call_id, tool_name, params)
             stream_blocked: dict[str, str] = {}
 
+            approved_stream_prefixes: set[str] = set()
+            if approval_decisions:
+                for d in approval_decisions:
+                    for prefix in d.remember_prefix:
+                        approved_stream_prefixes.add(prefix)
+
             for tc in collected_tool_calls:
                 tool_name = tc["function"]["name"]
                 try:
@@ -450,6 +458,28 @@ class InvestigationEngine:
                 if not allowed:
                     stream_blocked[call_id] = reason
                     continue
+
+                # Bash allow/deny
+                if tool_name in ("bash", "run_command", "execute_command"):
+                    cmd = params.get("command", "")
+                    if bash_always_deny:
+                        stream_blocked[call_id] = f"Bash command denied by policy: {cmd}"
+                        continue
+                    if not bash_always_allow:
+                        auto_approved = any(cmd.startswith(p) for p in approved_stream_prefixes)
+                        if not auto_approved and require_approval:
+                            decision = decisions.get(call_id)
+                            if decision is None or not decision.approved:
+                                stream_blocked[call_id] = f"Bash command requires approval: {cmd}"
+                                continue
+                            for prefix in decision.remember_prefix:
+                                approved_stream_prefixes.add(prefix)
+                elif require_approval:
+                    decision = decisions.get(call_id)
+                    if decision is None or not decision.approved:
+                        stream_blocked[call_id] = f"Tool call requires approval: {tool_name}"
+                        continue
+
                 parsed.append((call_id, tool_name, params))
 
             # Log tool count and emit start events

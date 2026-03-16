@@ -22,20 +22,30 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 ## Workflow
 
-### Step 1: Confirm ALB 5xx and Get Count
+### Step 1 + Step 2: Confirm ALB Metrics (Run in parallel)
+
+**Step 1a — Target 5xx count:**
 ```
 aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
 ```
-Also check ELB-generated 5xx (502/503/504 from ALB itself):
+
+**Step 1b — ELB-generated 5xx (502/503/504 from ALB itself):**
 ```
 aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_ELB_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
 ```
 
-### Step 2: Check Response Latency (Timeout vs Crash)
+**Step 2 — Response latency (run at same time as Step 1):**
 ```
 aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name TargetResponseTime --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average p99 --region <region>
 ```
 - High latency (> 5s) + 5xx = timeout (504). Instant 5xx = application crash (500/502).
+
+**Step 2b — 7-day baseline adversarial check (run at same time as Step 1):**
+To distinguish a real incident from a recurring pattern, check the same metric over the past 7 days:
+```
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <7 days ago ISO8601> --end-time <now ISO8601> --period 3600 --statistics Sum --region <region>
+```
+If the 5xx rate today matches the 7-day average → this is baseline noise, not a real incident. State this in your RCA.
 
 ### Step 3: Find Failing APIs from Istio Access Logs
 Search the Istio access log index (see knowledge base for exact index name) for 5xx HTTP responses in the last 30 minutes.

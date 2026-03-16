@@ -82,8 +82,10 @@ class SlackDestination:
         pdf_uploaded = False
         if pdf_path and os.path.exists(pdf_path):
             try:
+                with open(pdf_path, "rb") as f:
+                    pdf_content = f.read()
                 file_resp = client.files_upload_v2(
-                    content=open(pdf_path, "rb").read(),
+                    content=pdf_content,
                     filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
                     title=f"RCA - {title}",
                 )

@@ -40,6 +40,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
     # ── Oracle session state: thread_ts → {session_id, history} ──────────────
     # Keyed by thread_ts so any @mention in the same thread continues the session.
     _oracle_sessions: dict[str, dict] = {}
+    _oracle_lock = threading.Lock()
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -113,8 +114,10 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
         # oracle stop — end the session for this thread
         if question_lower in ("oracle stop", "oracle end", "oracle quit"):
-            if thread_ts in _oracle_sessions:
-                session_id = _oracle_sessions.pop(thread_ts)["session_id"]
+            with _oracle_lock:
+                session = _oracle_sessions.pop(thread_ts, None)
+            if session:
+                session_id = session["session_id"]
                 say(text=f"🔮 Oracle session ended. Resume later with `oracle resume {session_id}`", thread_ts=thread_ts)
             else:
                 say(text="No active oracle session in this thread.", thread_ts=thread_ts)
@@ -126,14 +129,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             try:
                 from vishwakarma.storage.queries import load_oracle_session
                 history = load_oracle_session(session_id) or []
-                _oracle_sessions[thread_ts] = {"session_id": session_id, "history": history}
+                with _oracle_lock:
+                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": history}
                 say(text=f"🔮 Oracle session resumed (`{session_id[:8]}...`) — {len(history)} messages in history. Ask your next question.", thread_ts=thread_ts)
             except Exception as e:
                 say(text=f"❌ Could not resume session: {e}", thread_ts=thread_ts)
             return
 
         # oracle <question> — start or continue oracle session
-        is_oracle = question_lower.startswith("oracle ") or thread_ts in _oracle_sessions
+        with _oracle_lock:
+            is_oracle = question_lower.startswith("oracle ") or thread_ts in _oracle_sessions
         if is_oracle:
             if question_lower.startswith("oracle "):
                 oracle_question = question[len("oracle "):].strip()
@@ -141,13 +146,17 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 oracle_question = question  # follow-up in existing oracle thread
 
             # Init session if new
-            if thread_ts not in _oracle_sessions:
-                import uuid
-                session_id = str(uuid.uuid4())
-                _oracle_sessions[thread_ts] = {"session_id": session_id, "history": []}
+            with _oracle_lock:
+                if thread_ts not in _oracle_sessions:
+                    import uuid
+                    session_id = str(uuid.uuid4())
+                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": []}
+                    new_session = True
+                else:
+                    session_id = _oracle_sessions[thread_ts]["session_id"]
+                    new_session = False
+            if new_session:
                 say(text=f"🔮 *Oracle session started* (`{session_id[:8]}...`)\nI'll remember context across your follow-up questions in this thread.", thread_ts=thread_ts)
-            else:
-                session_id = _oracle_sessions[thread_ts]["session_id"]
 
             say(text=f":mag: Investigating: *{oracle_question[:100]}*...", thread_ts=thread_ts)
 
@@ -156,13 +165,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 client_sdk = WebClient(token=config.slack_bot_token)
 
                 try:
-                    session = _oracle_sessions.get(t_ts, {"session_id": sid, "history": []})
-                    history = session["history"]
+                    with _oracle_lock:
+                        session = _oracle_sessions.get(t_ts, {"session_id": sid, "history": []})
+                        history = list(session["history"])  # copy to avoid mutation under lock
 
                     llm = config.make_llm()
                     engine = config.make_engine(llm=llm, toolset_manager=toolset_manager)
+                    injected = learnings_manager.for_alert(q)
                     extra = (
-                        "## Learned Knowledge\n"
+                        (f"## Relevant Learnings (pre-loaded)\n{injected}\n\n" if injected else "")
+                        + "## Learned Knowledge\n"
                         "Use `learnings_list` to see available learned knowledge categories, "
                         "then `learnings_read(category)` to load the ones relevant to this investigation. "
                         "Do this early in your investigation."
@@ -198,8 +210,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                     text=status_text,
                                     blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                log.debug(f"Status update failed (non-fatal): {_e}")
 
                         elif etype == "tool_call_result":
                             status = event.get("status", "")
@@ -215,8 +227,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                     text=status_text,
                                     blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                log.debug(f"Status update failed (non-fatal): {_e}")
 
                         elif etype == "done":
                             analysis = event.get("content", "") or ""
@@ -229,7 +241,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                 new_history.append({"role": "user", "content": q})
                                 new_history.append({"role": "assistant", "content": analysis})
 
-                            _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history}
+                            with _oracle_lock:
+                                _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history}
 
                             # Persist to SQLite
                             try:
@@ -247,8 +260,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                     text=f"🔍 {tool_count} tool calls completed",
                                     blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · done_"}]}],
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                log.debug(f"Status update failed (non-fatal): {_e}")
 
                             # Post the analysis in chunks (converted to Slack mrkdwn)
                             from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper

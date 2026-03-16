@@ -434,16 +434,19 @@ def _prefetch_alert_context(issue) -> str:
     Runs kubectl commands in parallel so the LLM begins with real signal,
     not cold — saves the first 3-5 investigation steps.
     """
+    import shlex
     import subprocess
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     labels = issue.labels or {}
-    namespace = (
+    raw_namespace = (
         labels.get("namespace")
         or labels.get("kubernetes_namespace")
         or labels.get("exported_namespace")
         or "atlas"
     )
+    # Sanitize namespace — alert labels are untrusted input
+    namespace = shlex.quote(raw_namespace)
 
     def _run(cmd: str) -> str:
         try:

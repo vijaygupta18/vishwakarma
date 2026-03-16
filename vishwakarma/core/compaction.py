@@ -196,7 +196,7 @@ def _llm_compact(messages: list[dict], llm) -> list[dict]:
         "content": f"**Investigation Summary (context compacted)**\n\n{summary}",
     })
     rebuilt.append({
-        "role": "system",
+        "role": "user",
         "content": (
             "The conversation history has been compacted to preserve context window space. "
             "The summary above contains all key findings. Continue the investigation."
