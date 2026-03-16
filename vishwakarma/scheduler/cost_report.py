@@ -695,7 +695,7 @@ def _analyze_costs(tables_md: str, anomalies: list[dict], anomaly_strs: list[str
             "Format your response as:\n"
             "## Summary\n<2-3 sentences: yesterday's total, day-over-day change, week-over-week trend, month forecast>\n\n"
             "## Where the Money Goes\n"
-            "<Top 5 services by cost with % of total. For each: what it is, "
+            "<ALL services from the data (at least 10) by cost with % of total. For each: what it is,"
             "whether it went up or down vs day-before, and why "
             "(e.g., 'EC2 dropped 13% — likely weekend traffic reduction', "
             "'ELB stayed flat — fixed ALB hourly charges dominate')>\n\n"
