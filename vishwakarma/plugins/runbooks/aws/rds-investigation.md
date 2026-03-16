@@ -18,118 +18,94 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 - RDS instance identifiers + roles (writer/reader) per cluster
 - Alert name → instance mapping (alarm names often don't match instance IDs)
 - Elasticsearch endpoint + app log index name
-- Prometheus endpoint
 - Service → RDS mapping (which app connects to which DB)
 
 ---
 
 ## Step 1: Identify the Affected Instance and Metric
 
-**IMPORTANT: Alarms often resolve before investigation starts. If `--state-value ALARM` returns empty, the alarm has already cleared — this is normal and expected. DO NOT retry this command. Proceed using `startsAt` from the alert.**
+**IMPORTANT: Alarms often resolve before investigation starts. If the alarm state is OK, that is normal — proceed using `startsAt` as your time anchor. Do NOT retry describe-alarms.**
 
-If the alert payload contains an alarm name, look it up directly (works regardless of current state):
+Run all of these in parallel:
+
+**1a — Look up the alarm (works regardless of current state):**
 ```
 aws cloudwatch describe-alarms --alarm-names "<alarm-name-from-alert>" --region <region> \
   --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason,StateUpdatedTimestamp,StateValue]' --output table
 ```
 
-If no alarm name in alert, check what recently fired (all states):
+**1b — Check alarm history to detect flapping/recurring pattern:**
 ```
-aws cloudwatch describe-alarm-history --region <region> \
-  --start-date <startsAt-30min ISO8601> --end-date <startsAt+2h ISO8601> \
+aws cloudwatch describe-alarm-history --alarm-name "<alarm-name-from-alert>" --region <region> \
+  --start-date <startsAt-2h ISO8601> --end-date <startsAt+1h ISO8601> \
   --history-item-type StateUpdate \
-  --query 'AlarmHistoryItems[?contains(HistorySummary, `RDS`) -| contains(AlarmName, `rds`) -| contains(AlarmName, `db`)].[AlarmName,Timestamp,HistorySummary]' \
-  --output table
+  --query 'AlarmHistoryItems[].[AlarmName,Timestamp,HistorySummary]' --output table
 ```
 
-Then list all RDS instances to confirm the exact identifier:
-```
-aws rds describe-db-instances --region <region> \
-  --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceClass,DBInstanceStatus,MultiAZ]' --output table
-```
-
-**IMPORTANT: Always check all instances in the same cluster in parallel, not just the one in the alarm name.**
-Alert names do not always map 1:1 to instance names — use the alert→instance mapping from the knowledge base.
-The actual high CPU may be on a different instance in the same cluster.
-
-- Use the instance→cluster mapping from the knowledge base to identify all instances in the same cluster
-- Check ALL instances in the cluster simultaneously — the alerting instance may not be the one with highest CPU
-
-Run CPU check for all instances in the cluster at once (use instance IDs from knowledge base):
+**1c — CPU across all instances in the cluster (use instance IDs from knowledge base):**
 ```
 for instance in <instance-1> <instance-2> <instance-3>; do
   echo "=== $instance ===" && \
   aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
     --dimensions Name=DBInstanceIdentifier,Value=$instance \
     --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-    --period 300 --statistics Average Maximum --region <region> --output json 2>/dev/null \
+    --period 60 --statistics Average Maximum --region <region> --output json 2>/dev/null \
     | jq -r '.Datapoints | sort_by(.Timestamp) | .[] | "\(.Timestamp): avg=\(.Average | floor)%, max=\(.Maximum | floor)%"'
 done
 ```
 
-The instance with the highest CPU is the actual affected instance — use that for all subsequent steps.
+**IMPORTANT: Always check all instances in the cluster — alarm names often don't match the actual affected instance. The instance with highest CPU is the one to investigate.**
 
----
-
-## Step 2: Check the Alerting Metric + Related Metrics (Run in Parallel)
-
-For the identified instance, run all of these simultaneously:
+**1d — Related metrics on the highest-CPU instance (run in parallel with 1c):**
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
-  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --period 300 --statistics Average Maximum --region <region>
-
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections \
-  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --period 300 --statistics Maximum --region <region>
-
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeableMemory \
-  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --period 300 --statistics Average --region <region>
-
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteIOPS \
-  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --period 300 --statistics Average --region <region>
-
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReadIOPS \
-  --dimensions Name=DBInstanceIdentifier,Value=<instance-id> \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --period 300 --statistics Average --region <region>
+for metric in DatabaseConnections ReadIOPS WriteIOPS FreeableMemory; do
+  echo "=== $metric ===" && \
+  aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name $metric \
+    --dimensions Name=DBInstanceIdentifier,Value=<highest-cpu-instance> \
+    --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+    --period 60 --statistics Average Maximum --region <region> --output json 2>/dev/null \
+    | jq -r '.Datapoints | sort_by(.Timestamp) | .[] | "\(.Timestamp): \(.Average // .Maximum | floor)"'
+done
 ```
 
 ---
 
-## Step 3: Find the Top Queries Using Performance Insights
+## Step 2: Find the Top Queries Using Performance Insights
 
-**IMPORTANT:** The PI API requires the `DbiResourceId` (e.g., `db-ABCDEF123456`), NOT the DBInstanceIdentifier (`bap-reader-1`). Always fetch it first.
+**IMPORTANT:** PI requires `DbiResourceId` (e.g. `db-ABCDEF123456`), NOT the DBInstanceIdentifier. Fetch it first.
 
-**Step 3a — Get the DbiResourceId:**
+**2a — Get DbiResourceId and query PI in one shot:**
 ```
-aws rds describe-db-instances --db-instance-identifier <instance-id> --region <region> \
-  --query 'DBInstances[0].DbiResourceId' --output text
-```
-This returns something like `db-ABCDEF123456`. Use this value in the next command.
+DBI=$(aws rds describe-db-instances --db-instance-identifier <instance-id> --region <region> \
+  --query 'DBInstances[0].DbiResourceId' --output text)
 
-**Step 3b — Query Performance Insights (most important step — identifies exactly which SQL is causing high CPU):**
+aws pi describe-dimension-keys \
+  --service-type RDS --identifier $DBI \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
+  --metric db.load.avg \
+  --group-by '{"Group":"db.sql_tokenized","Limit":10}' \
+  --region <region> 2>/dev/null \
+  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.sql_tokenized.statement")"'
+```
+
+**2b — Check wait events in parallel (confirms autovacuum, lock contention, I/O):**
 ```
 aws pi describe-dimension-keys \
-  --service-type RDS \
-  --identifier <DbiResourceId-from-step-3a> \
-  --start-time <startsAt-10min ISO8601> \
-  --end-time <startsAt+1h ISO8601> \
+  --service-type RDS --identifier $DBI \
+  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
   --metric db.load.avg \
-  --group-by '{"Group":"db.sql","Limit":10}' \
-  --region <region>
+  --group-by '{"Group":"db.wait_event","Limit":10}' \
+  --region <region> 2>/dev/null \
+  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.wait_event.name")"'
 ```
 
-Look for: full table scans (`Seq Scan`), missing indexes, long-running transactions, N+1 patterns.
-Note the top query fingerprint and which application service is likely running it.
+Look for:
+- `IO:DataFileRead` dominant → full table scan or missing index
+- `IO:XactSync` + `Timeout:VacuumDelay` → autovacuum
+- `Lock:relation` or `Lock:tuple` → lock contention
+- Top SQL > 40% db.load → single query is the culprit
 
-If Performance Insights returns no data, check slow query logs:
+**If PI returns empty Keys after 2 attempts with different time windows → move to slow query logs:**
 ```
 aws rds describe-db-log-files --db-instance-identifier <instance-id> --region <region>
 aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
@@ -138,41 +114,25 @@ aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
 
 ---
 
-## Step 4: Check Business Impact (Run in Parallel)
+## Step 3: Check Business Impact (Run in Parallel)
 
-After identifying the DB issue, immediately check if it's affecting users. Run all of these simultaneously.
+**Use `prometheus_query_range` tool for all PromQL. Do NOT use http_get.**
 
-**Use the `prometheus_query_range` tool for all PromQL queries below. Do NOT use http_get.**
+Run all three simultaneously:
 
-### 4a. Ride-to-Search Ratio (are riders getting matched?)
-Use `prometheus_query_range` tool with:
-- query: use your ride-created and search-request counter metrics from the knowledge base (e.g. `rate(<ride_created_metric>[5m]) / rate(<search_request_metric>[5m])`)
-- start: `<startsAt - 30m>`
-- end: `<startsAt + 1h>`
-- step: `5m`
-
-A drop at `startsAt` vs baseline indicates DB issues are blocking ride allocation.
-
-### 4b. 5xx Error Rate (are APIs failing?)
-Use `prometheus_query_range` tool with:
+**3a — 5xx error rate:**
 - query: `sum by(service,handler)(rate(http_request_duration_seconds_count{handler!="/v1/",status_code=~"^5.."}[1m]))`
-- start: `<startsAt - 10m>`
-- end: `<startsAt + 1h>`
-- step: `1m`
+- start: `<startsAt - 10m>`, end: `<startsAt + 1h>`, step: `1m`
 
-Check if any service's 5xx rate spiked at the same time as the DB CPU spike.
-
-### 4c. API Latency (are requests slowing down?)
-Use `prometheus_query_range` tool with:
+**3b — P99 latency:**
 - query: `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))`
-- start: `<startsAt - 10m>`
-- end: `<startsAt + 1h>`
-- step: `1m`
+- start: `<startsAt - 10m>`, end: `<startsAt + 1h>`, step: `1m`
 
-A p99 spike on the services that connect to this DB (see knowledge base) = DB is in the critical path.
+**3c — Ride-to-search ratio (are riders getting matched?):**
+- query: use ride-created and search-request metrics from knowledge base
+- start: `<startsAt - 30m>`, end: `<startsAt + 1h>`, step: `5m`
 
-### 4d. ALB 5xx errors (fallback if prometheus_query_range returns no data)
-Use bash tool:
+**Fallback if Prometheus returns no data:**
 ```
 aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
   --metric-name HTTPCode_Target_5XX_Count \
@@ -182,14 +142,18 @@ aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB \
 
 ---
 
-## Step 5: Correlate — Which Service is Hitting This DB?
+## Step 4: Correlate — Which Service is Hitting This DB?
 
-Check application pods that connect to this DB (use service names from the knowledge base):
+Only run this step if Step 3 shows user impact OR connections are high.
+
+**4a — Live pod logs for DB errors (use service names from knowledge base):**
 ```
-timeout 30 stern -n <namespace> <service-name> --since 1h 2>/dev/null | grep -iE "db|connection|timeout|refused|deadlock|query" | head -100
+timeout 30 stern -n <namespace> <service-name> --since 1h 2>/dev/null \
+  | grep -iE "connection|timeout|refused|deadlock|pool" | head -50
 ```
 
-Search Elasticsearch for DB errors in the app log index (see knowledge base for index name):
+**4b — Elasticsearch search for DB errors:**
+Use `elasticsearch_search` tool with index from knowledge base:
 ```json
 {
   "size": 20,
@@ -211,45 +175,44 @@ Search Elasticsearch for DB errors in the app log index (see knowledge base for 
       ]
     }
   },
-  "_source": ["message", "@timestamp"]
+  "_source": ["message", "@timestamp", "service"]
 }
 ```
 
 ---
 
-## Synthesis
+## Synthesis — Decision Tree
 
-| Pattern | Root Cause |
-|---------|------------|
-| High CPU + Performance Insights shows seq scan | Missing index on a hot table |
-| High CPU + connection surge coincides with deploy | New code introduced expensive query or connection leak |
-| High CPU + high WriteIOPS | Bulk insert/update or autovacuum running |
-| High connections + DB errors in app logs | PgBouncer pool exhaustion |
-| Replication lag + high WriteIOPS | Heavy write load on primary |
-| DB CPU high but no 5xx / no ratio drop | Background job or analytics query — lower urgency |
-| DB CPU high + 5xx spike + ratio drop | Critical — DB is blocking ride matching / user requests |
+Work through top-to-bottom. Stop at first match.
 
-## Output Required
+**1. CPU high + ReadIOPS > 5x normal?**
+→ **Missing index or full table scan** — PI top SQL will show it. Confidence: HIGH if one query > 40% db.load.
 
-State clearly:
-1. **Affected instance:** `<instance-id>` with `<metric>` at `<peak value>` at `<timestamp>`
-2. **Top query:** `<SQL fingerprint>` — likely from service `<service-name>`
-3. **Business impact:** ride-to-search ratio `<before>` → `<after>`, 5xx rate `<before>` → `<after>`
-4. **Root cause:** one sentence
-5. **Recommended fix:** exact action (add index on X, scale instance, fix query in service Y)
+**2. CPU high + connections surged + coincides with deploy?**
+→ **New code introduced expensive query or connection leak** — check deploy time vs spike time (must overlap within 10 min). Confidence: HIGH if deploy time matches exactly.
+
+**3. CPU high + WriteIOPS high + no recent deploy?**
+→ **Autovacuum or bulk insert/update** — PI wait events show `IO:XactSync` + `Timeout:VacuumDelay`. Confidence: MEDIUM.
+
+**4. Connections high + DB errors in app logs?**
+→ **PgBouncer pool exhaustion** — app logs show "too many clients" or "connection pool". Confidence: HIGH.
+
+**5. Replication lag high + WriteIOPS high on writer?**
+→ **Heavy write load causing replica lag** — readers falling behind, reads hitting writer. Confidence: HIGH if lag > 30s.
+
+**6. CPU high + no 5xx + no ride-to-search drop?**
+→ **Background job or analytics query — lower urgency.** No immediate action needed. PI will show who is running it.
+
+**7. None match?** → Continue with Extended Investigation.
+
+**After choosing hypothesis:** run adversarial check — try to find evidence that contradicts it before concluding.
 
 ---
 
-## Extended Investigation (if runbook steps did not find root cause)
+## Extended Investigation
 
-If you have followed all the steps above and still cannot determine the root cause with HIGH or MEDIUM confidence, do not stop. Use your own judgment to continue investigating using any tools available. Consider:
-- Correlate timestamps across all signals — metrics spike, log errors, pod restarts, deployments
-- Check services that this component depends on (upstream/downstream)
-- Look for patterns: is this affecting one pod or all? One namespace or cluster-wide?
-- Check recent changes: deployments, config changes, scaling events in the last 2 hours
-- Query Elasticsearch for error patterns around the incident time
-- Check Prometheus for any other anomalous metrics correlated with the alert time
-- Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
-
-The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
-
+If root cause is still not confirmed with HIGH or MEDIUM confidence:
+- Correlate timestamps: metrics spike, log errors, pod restarts, recent deploys
+- Check upstream/downstream services this DB depends on
+- Look for scheduled jobs (cron, batch) running at the incident time
+- Check `kubectl get events -n <namespace>` for pod restarts or node pressure around the incident time

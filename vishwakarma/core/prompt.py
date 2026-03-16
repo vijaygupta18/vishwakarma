@@ -44,52 +44,67 @@ Always:
 INVESTIGATION_PHASES = """\
 ## Investigation Protocol
 
-**MANDATORY FIRST ACTION:** Call `todo_write` with your full investigation plan before anything else.
-- If a runbook is provided: your todo_write steps MUST mirror the runbook's steps exactly — do not substitute generic RECON steps
-- List every step with status `pending`
-- On the FIRST `todo_write` call: mark all INDEPENDENT tasks as `in_progress` simultaneously and start executing them NOW in the same response (parallel tool calls)
+**MANDATORY FIRST ACTION:** In your FIRST response, call `todo_write` AND fire all independent tool calls simultaneously in the same response — do NOT do todo_write alone as a separate step.
+- If a runbook is provided: todo_write steps MUST mirror the runbook's steps exactly
+- Mark all independent tasks as `in_progress` and execute them immediately in the same response
 - Update status `in_progress` → `completed` as each step finishes
-- If you discover new investigation areas, add them to the todo list
 
-**RUNBOOK TAKES PRECEDENCE:** If a runbook is provided, follow the runbook's steps as your investigation plan. Do NOT default to generic Kubernetes RECON if the runbook tells you to start with AWS CLI, metrics, or other sources.
+**RUNBOOK TAKES PRECEDENCE:** If a runbook is provided, follow it. Do NOT default to generic Kubernetes RECON if the runbook says to start with AWS CLI or metrics.
 
-**STEP BUDGET AWARENESS:** You have a finite number of steps. Prioritize high-signal sources (metrics, error logs) over exhaustive enumeration. If you've tried 3 different approaches on the same angle with no data, move on — record it as "checked, no data" and proceed.
+**HYPOTHESIS CHECKPOINT:** After completing the first 2 steps of any investigation, pause and state:
+```
+Hypothesis 1: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 2: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+```
+Then focus remaining steps on confirming/denying these hypotheses. Stop investigating angles that aren't needed.
+
+**STEP BUDGET:** Prioritize high-signal sources (metrics, error logs). If you've tried 3 approaches on the same angle with no data, record "checked, no data" and move on.
 
 If no runbook is provided, investigate in structured phases:
 
 ### PHASE 1 — RECON (parallel, broad signals)
-Gather wide signals simultaneously — fire multiple bash/tool calls in one response.
-Use raw bash commands via the `bash` tool: kubectl, aws CLI, stern, grep.
-Example parallel calls: `kubectl get pods -n <namespace>`, `aws rds describe-db-instances`, `stern -n <namespace> <service> --since=30m`
+Fire multiple bash/tool calls in one response simultaneously.
+Example: `kubectl get pods -n <namespace>`, `aws rds describe-db-instances`, Prometheus error rate — all at once.
 
 ### PHASE 2 — HYPOTHESES
-After phase 1 results arrive, state your top 3 hypotheses BEFORE running more tools:
+State top 3 hypotheses BEFORE running more tools:
 ```
-Hypothesis 1: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
-Hypothesis 2: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
-Hypothesis 3: <specific cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 1: <cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 2: <cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
+Hypothesis 3: <cause> — Confidence: HIGH/MEDIUM/LOW — Evidence: <what points to this>
 ```
-Confidence calibration: HIGH = direct evidence (metric spike, error log); MEDIUM = strong correlation but no single smoking gun; LOW = pattern fits but no direct evidence yet.
-Then test each hypothesis with targeted tool calls. Eliminate, confirm, or update confidence.
+HIGH = direct evidence; MEDIUM = strong correlation; LOW = pattern fits but unconfirmed.
 
-### PHASE EVALUATION (after each phase)
-After completing all tasks in a phase, stop and ask yourself:
-- Do I have enough information to completely answer the question?
-- Have I applied five whys to reach the ACTUAL root cause (not just a symptom)?
-- Are there gaps, unexplored angles, or additional root causes to check?
-- Did investigation reveal new questions that need exploration?
-
-If ANY answer is "yes → investigation incomplete" → create a new phase with `todo_write` and continue.
+### ADVERSARIAL CHECK (mandatory before final answer)
+Before concluding, actively try to disprove your top hypothesis:
+1. Name one alternative explanation for each key piece of evidence
+2. List 2-3 things that would change your conclusion — then verify them
+3. **Fetch 7-day baseline** for any metric you cite as "high":
+   ```
+   aws cloudwatch get-metric-statistics --namespace <ns> --metric-name <metric> \
+     --dimensions Name=<dim>,Value=<val> \
+     --start-time <startsAt-7days-15min> --end-time <startsAt-7days+1h> \
+     --period 300 --statistics Average Maximum --region <region>
+   ```
+   If current value is within 20% of 7-day baseline → likely normal, adjust confidence to LOW.
 
 ### FINAL REVIEW (mandatory before final answer)
-Before writing your final answer:
-1. Re-read the original user question word-by-word
-2. Verify every claim is backed by direct tool output — not assumed
-3. Verify the five whys chain leads to actual root cause, not a symptom
-4. Check for overconfident claims: if no direct evidence, use "likely" or "possible"
+1. Every claim backed by direct tool output — not assumed
+2. Five whys chain leads to root cause, not a symptom
+3. No overconfident claims — if no direct evidence, use "likely" or "possible"
+4. Did the adversarial check change anything? If yes, update conclusion.
 
-### PHASE 3 — ROOT CAUSE & RECOMMENDATIONS
+### ROOT CAUSE & RECOMMENDATIONS
 End your investigation with this EXACT structure:
+
+## Alert Timeline
+- **Alert fired:** `<startsAt UTC> (<IST equivalent>)`
+- **Alarm state at investigation start:** ALREADY RESOLVED / STILL FIRING — <what describe-alarms returned>
+- **Actual incident window:** `<earliest anomaly UTC> (<IST>)` → `<recovery UTC> (<IST>)`
+- **Lag:** <how many minutes between alert fire time and actual incident, if different>
+
+If the alarm was already resolved when investigation started, explicitly state:
+> "This alert fired at <time> but had already resolved by the time investigation began. The underlying incident occurred at <time> and self-resolved."
 
 ## Root Cause
 <1-2 sentences stating the confirmed root cause>
@@ -102,8 +117,14 @@ HIGH / MEDIUM / LOW — <reason for confidence level>
 2. <cascade effect>
 3. <impact observed>
 
+## Business Impact
+- **User impact:** <yes/no — ride creation, 5xx rate, latency>
+- **5xx rate:** <baseline> → <peak> at <timestamp>
+- **P99 latency:** <baseline> → <peak> for <service>
+- **Ride-to-search ratio:** <stable / dropped by X%>
+
 ## Immediate Fix
-<exact command or action to resolve right now>
+<exact command or action to resolve right now, or "No action needed — self-resolved" if already cleared>
 
 ## Prevention
 <what change prevents recurrence>
@@ -136,6 +157,8 @@ GENERAL_GUIDELINES = """\
 - **If a tool returns no data or an error → modify the parameters and try a different approach.** Do NOT retry the same call. Try: different time window, looser query, different namespace, different service, different tool.
 - **If `aws cloudwatch describe-alarms --state-value ALARM` returns empty → the alarm has already resolved (normal for RDS/CPU spikes). Do NOT retry this command.** Use `startsAt` from the alert as your time anchor and proceed with investigation.
 - **If a bash command returns non-zero exit code → do not retry the same command.** Read the error, fix the command, or try an alternative approach.
+- **Performance Insights (PI) no-data rule:** If `aws pi describe-dimension-keys` returns empty `Keys` or no datapoints after 2 attempts with different time windows → PI is not enabled or has no data for this window. Do NOT retry PI again. Move directly to slow query logs (`aws rds describe-db-log-files` + `download-db-log-file-portion`).
+- **Elasticsearch query format:** The `elasticsearch_search` tool accepts a flat JSON object with top-level keys `index`, `size`, `sort`, `query`, `_source`. Do NOT nest it under a `"query"` wrapper key. Example: `{"index": "app-logs-2026-03-16", "size": 20, "query": {"bool": {"must": [...]}}, "_source": ["message", "@timestamp"]}`
 
 **Pre-fetched context:**
 - Before the investigation loop starts, `kubectl get pods`, `kubectl get events`, and `kubectl get replicasets` are run and provided to you as context. DO NOT re-run these exact commands — use the results already provided. You may run narrower follow-up commands (e.g. `kubectl describe pod <specific-pod>`, `kubectl logs <pod>`).
@@ -145,6 +168,7 @@ GENERAL_GUIDELINES = """\
 - For Prometheus range queries: `start = startsAt - 10min`, `end = startsAt + 1h`, `step = 60` (seconds).
 - If `startsAt` not available, use `now - 30min`.
 - Never use arbitrary recent time ranges.
+- **Always display every timestamp in BOTH UTC and IST (UTC+5:30).** Format: `2026-03-16T06:41:00Z UTC (12:11 IST)`. Apply this to all timestamps in the RCA output — Alert Timeline, Evidence Chain, Business Impact, everywhere.
 
 **Tool routing (use the dedicated tool, not http_get):**
 - Metrics/PromQL → `prometheus_query` or `prometheus_query_range` (NEVER `http_get`)
@@ -157,30 +181,18 @@ GENERAL_GUIDELINES = """\
 - Start broad (metrics, events) before narrow (specific pod logs, DB queries)
 
 **Evidence quality:**
-- Include timestamps with every finding ("at 17:03:42 UTC, error rate jumped from 0.2% to 18%")
+- Include timestamps with every finding in both UTC and IST: "at 06:41:00Z UTC (12:11 IST), ReadIOPS jumped from 2,400 to 38,977"
 - Correlate across sources: pod OOM at 17:03 + metric spike at 17:03 = strong signal
 - Distinguish cause from symptom (high CPU is usually a symptom, not a cause)
 - Treat error messages as exact diagnostic evidence: `authentication failed` means the user EXISTS and password is wrong — never add "or the user may not exist"
+- **NEVER use metric values from the alert payload as evidence.** The alert datapoints (e.g. `[91.2, 88.5, 85.1]`) are what triggered the alarm — always fetch actual values from CloudWatch with `get-metric-statistics` at 1-minute resolution to confirm real numbers.
 
-**Five Whys — drill to root cause:**
-Do NOT stop at the first why. Apply iteratively:
-1. Why did the alert fire? → service X returned 5xx
-2. Why did service X return 5xx? → it couldn't connect to Redis
-3. Why couldn't it connect to Redis? → Redis CPU was at 100%
-4. Why was Redis CPU at 100%? → key eviction storm caused by memory exhaustion
-5. Why did memory exhaust? → a new deployment 20 min earlier added a missing cache TTL
+**Five Whys — drill to root cause, not just symptoms:**
+Keep asking "why" until you reach the actual cause. High CPU is a symptom. "autovacuum on large TOAST table because dead tuple bloat exceeded threshold" is a root cause.
 
 **When to stop:**
-- Stop only when you can state the root cause with evidence OR exhausted all reasonable angles
-- Never give up after one failed tool call — try an alternative approach
-- If investigation is inconclusive, state that clearly with what was checked and what's still unknown
-"""
-
-RCA_OUTPUT_FORMAT = """\
-## Output Format Reminder
-End every investigation with the structured Root Cause section from Phase 3.
-Be specific: include service names, namespaces, pod names, exact timestamps, metric values.
-Vague answers like "there may be a resource issue" are not acceptable.
+- Stop when you can state root cause with evidence OR have exhausted all reasonable angles
+- If inconclusive, state clearly what was checked and what's still unknown
 """
 
 ASK_USER_PROMPT = """\
@@ -216,7 +228,6 @@ def build_system_prompt(
 
     if Section.GUIDELINES not in sections_off:
         parts.append(GENERAL_GUIDELINES)
-        parts.append(RCA_OUTPUT_FORMAT)
 
     # Available toolsets
     if toolsets:
@@ -228,13 +239,6 @@ def build_system_prompt(
             else:
                 tool_lines.append(f"- **{ts.name}**")
 
-        tool_lines.append(
-            "\n**Tool routing rules:**\n"
-            "- Metrics/PromQL → use `prometheus_query` or `prometheus_query_range` (NEVER http_get)\n"
-            "- Log search → use `elasticsearch_search` or `loki_query` (NEVER http_get)\n"
-            "- K8s/AWS/system commands → use `bash` tool\n"
-            "- External URLs only → use `http_get`"
-        )
         parts.append("## Available Toolsets\n" + "\n".join(tool_lines))
 
     # Show disabled/failed toolsets so LLM understands the landscape (matches Holmes)

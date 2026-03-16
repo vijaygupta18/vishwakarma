@@ -16,6 +16,19 @@ Conversions:
 import re
 
 
+def strip_code_wrapper(text: str) -> str:
+    """
+    Strip a wrapping triple-backtick code fence if the LLM accidentally
+    wrapped its entire output in one. Only strips the outermost fence.
+    """
+    text = text.strip()
+    if text.startswith("```") and text.endswith("```") and text.count("```") == 2:
+        # Remove opening fence (with optional language tag) and closing fence
+        text = re.sub(r'^```[^\n]*\n', '', text)
+        text = re.sub(r'\n```$', '', text)
+    return text.strip()
+
+
 def md_to_slack(text: str) -> str:
     """Convert markdown to Slack mrkdwn format."""
     # Normalise line endings

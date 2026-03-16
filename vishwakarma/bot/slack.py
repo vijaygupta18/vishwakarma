@@ -251,8 +251,8 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                 pass
 
                             # Post the analysis in chunks (converted to Slack mrkdwn)
-                            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack
-                            slack_text = md_to_slack(analysis)
+                            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
+                            slack_text = md_to_slack(strip_code_wrapper(analysis))
                             chunks = chunk_for_slack(slack_text)
                             for chunk in chunks:
                                 client_sdk.chat_postMessage(

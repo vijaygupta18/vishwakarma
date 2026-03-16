@@ -87,30 +87,41 @@ class SlackDestination:
                     filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
                     title=f"RCA - {title}",
                 )
-                if file_resp and "file" in file_resp:
-                    permalink = file_resp["file"]["permalink"]
-                    client.chat_postMessage(
-                        channel=channel,
-                        thread_ts=msg_ts,
-                        text=f":page_facing_up: *Full RCA Report (PDF)*\n<{permalink}|Download RCA: {title}>",
-                        blocks=[
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
-                                },
-                            }
-                        ],
-                    )
-                    pdf_uploaded = True
+                # files_upload_v2 sets file_resp["file"] from completeUploadExternal,
+                # but that response may not include permalink — fetch via files.info if needed.
+                file_obj = file_resp.get("file") if file_resp else None
+                if file_obj:
+                    permalink = file_obj.get("permalink")
+                    if not permalink:
+                        file_id = file_obj.get("id")
+                        if file_id:
+                            info_resp = client.files_info(file=file_id)
+                            permalink = (info_resp.get("file") or {}).get("permalink")
+                    if permalink:
+                        client.chat_postMessage(
+                            channel=channel,
+                            thread_ts=msg_ts,
+                            text=f":page_facing_up: *Full RCA Report (PDF)*\n<{permalink}|Download RCA: {title}>",
+                            blocks=[
+                                {
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
+                                    },
+                                }
+                            ],
+                        )
+                        pdf_uploaded = True
+                    else:
+                        log.warning("PDF uploaded but no permalink obtained — falling back to text")
             except Exception as e:
                 log.warning(f"PDF upload failed, falling back to text: {e}")
 
         if not pdf_uploaded:
             # Fallback: chunked text messages in thread (converted to Slack mrkdwn)
-            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack
-            slack_text = md_to_slack(analysis)
+            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
+            slack_text = md_to_slack(strip_code_wrapper(analysis))
             for chunk in chunk_for_slack(slack_text):
                 client.chat_postMessage(
                     channel=channel,

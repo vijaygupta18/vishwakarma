@@ -364,10 +364,14 @@ def generate_pdf(
     tool_outputs: list | None = None,
     meta: dict | None = None,
     output_path: str | None = None,
+    include_evidence: bool = False,
 ) -> str | None:
     """
     Generate a branded PDF RCA report.
     Returns path to generated PDF, or None on failure.
+
+    include_evidence: if True, appends all raw tool outputs as an appendix.
+                      Default False — PDF contains only the RCA summary.
     """
     try:
         import markdown
@@ -396,9 +400,13 @@ def generate_pdf(
             "sev_border": colors["border"],
         }
 
+        # Strip wrapping code fence if LLM accidentally wrapped entire output in ```
+        from vishwakarma.utils.slack_format import strip_code_wrapper
+        analysis = strip_code_wrapper(analysis or "")
+
         # Parse analysis markdown — fenced_code + tables + sane_lists
         body_html = markdown.markdown(
-            analysis or "",
+            analysis,
             extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
         )
 
@@ -406,8 +414,8 @@ def generate_pdf(
         meta = meta or {}
         meta_items = _build_meta_items(meta, source)
 
-        # Evidence appendix
-        evidence_html = _build_evidence(tool_outputs or [])
+        # Evidence appendix (only if requested)
+        evidence_html = _build_evidence(tool_outputs or []) if include_evidence else ""
 
         # Footer stats
         footer_stats = _build_footer(meta, now)
