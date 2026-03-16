@@ -108,10 +108,10 @@ class SlackDestination:
                 log.warning(f"PDF upload failed, falling back to text: {e}")
 
         if not pdf_uploaded:
-            # Fallback: chunked text messages in thread (Holmes pattern)
-            MAX_CHUNK_LEN = 2900
-            chunks = [analysis[i:i + MAX_CHUNK_LEN] for i in range(0, len(analysis), MAX_CHUNK_LEN)]
-            for chunk in chunks:
+            # Fallback: chunked text messages in thread (converted to Slack mrkdwn)
+            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack
+            slack_text = md_to_slack(analysis)
+            for chunk in chunk_for_slack(slack_text):
                 client.chat_postMessage(
                     channel=channel,
                     thread_ts=msg_ts,

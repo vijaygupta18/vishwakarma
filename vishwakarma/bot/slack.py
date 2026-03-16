@@ -37,6 +37,10 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
     app = App(token=config.slack_bot_token, signing_secret=config.slack_signing_secret)
 
+    # ── Oracle session state: thread_ts → {session_id, history} ──────────────
+    # Keyed by thread_ts so any @mention in the same thread continues the session.
+    _oracle_sessions: dict[str, dict] = {}
+
     # ── Event handlers ────────────────────────────────────────────────────────
 
     @app.event("app_mention")
@@ -105,6 +109,176 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 return
             removed = learnings_manager.forget(cat, keyword)
             say(text=f"🗑️ Removed {removed} fact(s) matching '{keyword}' from {cat}", thread_ts=thread_ts)
+            return
+
+        # oracle stop — end the session for this thread
+        if question_lower in ("oracle stop", "oracle end", "oracle quit"):
+            if thread_ts in _oracle_sessions:
+                session_id = _oracle_sessions.pop(thread_ts)["session_id"]
+                say(text=f"🔮 Oracle session ended. Resume later with `oracle resume {session_id}`", thread_ts=thread_ts)
+            else:
+                say(text="No active oracle session in this thread.", thread_ts=thread_ts)
+            return
+
+        # oracle resume <session_id>
+        if question_lower.startswith("oracle resume "):
+            session_id = question[len("oracle resume "):].strip()
+            try:
+                from vishwakarma.storage.queries import load_oracle_session
+                history = load_oracle_session(session_id) or []
+                _oracle_sessions[thread_ts] = {"session_id": session_id, "history": history}
+                say(text=f"🔮 Oracle session resumed (`{session_id[:8]}...`) — {len(history)} messages in history. Ask your next question.", thread_ts=thread_ts)
+            except Exception as e:
+                say(text=f"❌ Could not resume session: {e}", thread_ts=thread_ts)
+            return
+
+        # oracle <question> — start or continue oracle session
+        is_oracle = question_lower.startswith("oracle ") or thread_ts in _oracle_sessions
+        if is_oracle:
+            if question_lower.startswith("oracle "):
+                oracle_question = question[len("oracle "):].strip()
+            else:
+                oracle_question = question  # follow-up in existing oracle thread
+
+            # Init session if new
+            if thread_ts not in _oracle_sessions:
+                import uuid
+                session_id = str(uuid.uuid4())
+                _oracle_sessions[thread_ts] = {"session_id": session_id, "history": []}
+                say(text=f"🔮 *Oracle session started* (`{session_id[:8]}...`)\nI'll remember context across your follow-up questions in this thread.", thread_ts=thread_ts)
+            else:
+                session_id = _oracle_sessions[thread_ts]["session_id"]
+
+            say(text=f":mag: Investigating: *{oracle_question[:100]}*...", thread_ts=thread_ts)
+
+            def run_oracle(q=oracle_question, sid=session_id, t_ts=thread_ts):
+                from slack_sdk import WebClient
+                client_sdk = WebClient(token=config.slack_bot_token)
+
+                try:
+                    session = _oracle_sessions.get(t_ts, {"session_id": sid, "history": []})
+                    history = session["history"]
+
+                    llm = config.make_llm()
+                    engine = config.make_engine(llm=llm, toolset_manager=toolset_manager)
+                    extra = (
+                        "## Learned Knowledge\n"
+                        "Use `learnings_list` to see available learned knowledge categories, "
+                        "then `learnings_read(category)` to load the ones relevant to this investigation. "
+                        "Do this early in your investigation."
+                    )
+
+                    # Post a live status message we'll keep updating with tool calls
+                    status_resp = client_sdk.chat_postMessage(
+                        channel=channel,
+                        thread_ts=t_ts,
+                        text="⏳ Starting investigation...",
+                        blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": "⏳ _Starting investigation..._"}]}],
+                    )
+                    status_ts = status_resp["ts"]
+
+                    tool_lines: list[str] = []
+                    analysis = ""
+
+                    for event in engine.stream_investigate(question=q, extra_system_prompt=extra, history=history):
+                        etype = event.get("type", "")
+
+                        if etype == "tool_call_start":
+                            tool = event.get("tool", "")
+                            params = event.get("params", {})
+                            param_str = _short_oracle_params(params)
+                            tool_lines.append(f"⚙ `{tool}({param_str})`")
+                            # Update status message — show last 10 tool calls
+                            visible = tool_lines[-10:]
+                            status_text = "\n".join(visible)
+                            try:
+                                client_sdk.chat_update(
+                                    channel=channel,
+                                    ts=status_ts,
+                                    text=status_text,
+                                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
+                                )
+                            except Exception:
+                                pass
+
+                        elif etype == "tool_call_result":
+                            status = event.get("status", "")
+                            marker = "✓" if status == "success" else "✗"
+                            if tool_lines:
+                                tool_lines[-1] = tool_lines[-1] + f"  {marker}"
+                            visible = tool_lines[-10:]
+                            status_text = "\n".join(visible)
+                            try:
+                                client_sdk.chat_update(
+                                    channel=channel,
+                                    ts=status_ts,
+                                    text=status_text,
+                                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
+                                )
+                            except Exception:
+                                pass
+
+                        elif etype == "done":
+                            analysis = event.get("content", "") or ""
+                            # Update history from full messages if available
+                            full_messages = event.get("messages")
+                            if full_messages:
+                                new_history = [m for m in full_messages if m.get("role") != "system"]
+                            else:
+                                new_history = list(history)
+                                new_history.append({"role": "user", "content": q})
+                                new_history.append({"role": "assistant", "content": analysis})
+
+                            _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history}
+
+                            # Persist to SQLite
+                            try:
+                                from vishwakarma.storage.queries import save_oracle_session
+                                save_oracle_session(sid, new_history)
+                            except Exception as e:
+                                log.warning(f"Oracle session save failed: {e}")
+
+                            # Finalise status message with tool summary
+                            tool_count = len(tool_lines)
+                            try:
+                                client_sdk.chat_update(
+                                    channel=channel,
+                                    ts=status_ts,
+                                    text=f"🔍 {tool_count} tool calls completed",
+                                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · done_"}]}],
+                                )
+                            except Exception:
+                                pass
+
+                            # Post the analysis in chunks (converted to Slack mrkdwn)
+                            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack
+                            slack_text = md_to_slack(analysis)
+                            chunks = chunk_for_slack(slack_text)
+                            for chunk in chunks:
+                                client_sdk.chat_postMessage(
+                                    channel=channel,
+                                    thread_ts=t_ts,
+                                    text=chunk,
+                                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
+                                )
+
+                            # Turn hint
+                            turn = len(new_history) // 2
+                            client_sdk.chat_postMessage(
+                                channel=channel,
+                                thread_ts=t_ts,
+                                text=f"Turn {turn} — ask a follow-up or @oogway oracle stop to end",
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Turn {turn} · Session `{sid[:8]}...` · Ask a follow-up or `@oogway oracle stop` to end_"}]}],
+                            )
+
+                except Exception as e:
+                    log.error(f"Oracle investigation failed: {e}", exc_info=True)
+                    try:
+                        say(text=f"❌ Oracle failed: {str(e)[:200]}", thread_ts=t_ts)
+                    except Exception:
+                        pass
+
+            threading.Thread(target=run_oracle, daemon=True).start()
             return
 
         # debug <question> → full investigation + PDF
@@ -563,15 +737,17 @@ def _help_text() -> str:
 *Usage:*
 • `@oogway <question>` — quick chat reply (no tools)
 • `@oogway debug <question>` — full investigation + PDF report
+• `@oogway oracle <question>` — start a multi-turn investigation session (follow-ups remember context)
+• `@oogway oracle stop` — end the oracle session in this thread
+• `@oogway oracle resume <id>` — resume a previous oracle session
 • `@oogway status` — show incident stats
+• `@oogway learn [category] <fact>` — add a learning
+• `@oogway forget [category] <keyword>` — remove a learning
 • `@oogway help` — show this message
 
 *Examples:*
-• `@oogway hello` → casual reply
 • `@oogway debug why are payments pods crashing?` → full RCA with PDF
-• `@oogway debug check error rate for rider-app since last deploy`
-
-For deep investigations, always use `debug` — I'll search metrics, logs, K8s events, and databases."""
+• `@oogway oracle check RDS CPU spike from 10am` → start oracle session, then ask follow-ups in thread"""
 
 
 def _extract_root_cause(analysis: str) -> str:
@@ -726,6 +902,18 @@ def _distill_fact(config, text: str, alert_name: str, correction: bool = False, 
         if first[-1] not in ".!?":
             first += "."
         return f"{prefix}: {first}"
+
+
+def _short_oracle_params(params: dict, max_len: int = 60) -> str:
+    """Compact param string for live tool call display in Slack."""
+    parts = []
+    for k, v in params.items():
+        val = str(v)
+        if len(val) > 30:
+            val = val[:27] + "..."
+        parts.append(f"{k}={val!r}")
+    result = ", ".join(parts)
+    return result[:max_len - 3] + "..." if len(result) > max_len else result
 
 
 def _format_stats(stats: dict) -> str:
