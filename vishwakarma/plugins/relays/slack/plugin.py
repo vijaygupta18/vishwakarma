@@ -41,44 +41,107 @@ class SlackDestination:
     ) -> dict:
         channel = channel or self._channel
         client = self._get_client()
+
+        # If posting in an existing thread (e.g., @oogway debug response),
+        # post the analysis directly as thread replies — no big header announcement.
+        # If no thread_ts (e.g., alert-triggered investigation), post the header as a new message.
+        if thread_ts:
+            msg_ts = thread_ts  # reply in existing thread
+
+            # Post analysis as chunked mrkdwn in thread
+            from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
+            slack_text = md_to_slack(strip_code_wrapper(analysis))
+            for chunk in chunk_for_slack(slack_text):
+                client.chat_postMessage(
+                    channel=channel,
+                    thread_ts=msg_ts,
+                    text=chunk,
+                    blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
+                )
+
+            # Upload PDF in same thread
+            if pdf_path and os.path.exists(pdf_path):
+                try:
+                    with open(pdf_path, "rb") as f:
+                        pdf_content = f.read()
+                    file_resp = client.files_upload_v2(
+                        content=pdf_content,
+                        filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
+                        title=f"RCA - {title}",
+                    )
+                    file_obj = file_resp.get("file") if file_resp else None
+                    if file_obj:
+                        permalink = file_obj.get("permalink")
+                        if not permalink:
+                            file_id = file_obj.get("id")
+                            if file_id:
+                                info_resp = client.files_info(file=file_id)
+                                permalink = (info_resp.get("file") or {}).get("permalink")
+                        if permalink:
+                            client.chat_postMessage(
+                                channel=channel,
+                                thread_ts=msg_ts,
+                                text=f":page_facing_up: Full RCA Report (PDF)",
+                                blocks=[{
+                                    "type": "section",
+                                    "text": {"type": "mrkdwn", "text": f":page_facing_up: <{permalink}|Download PDF: {title[:60]}>"},
+                                }],
+                            )
+                except Exception as e:
+                    log.warning(f"PDF upload failed: {e}")
+
+            # Feedback buttons in thread
+            if incident_id:
+                try:
+                    client.chat_postMessage(
+                        channel=channel,
+                        thread_ts=msg_ts,
+                        text="Was this RCA accurate?",
+                        blocks=[
+                            {"type": "section", "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"}},
+                            {
+                                "type": "actions",
+                                "block_id": f"rca_feedback_{incident_id[:16]}",
+                                "elements": [
+                                    {"type": "button", "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True}, "style": "primary", "action_id": "vk_rca_correct", "value": incident_id},
+                                    {"type": "button", "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True}, "style": "danger", "action_id": "vk_rca_wrong", "value": incident_id},
+                                ],
+                            },
+                        ],
+                    )
+                except Exception as e:
+                    log.warning(f"Feedback buttons post failed: {e}")
+
+            return {"ts": msg_ts, "channel": channel}
+
+        # No thread_ts — new top-level message (alert-triggered investigations)
         color = "#FF0000" if severity in ("critical", "high") else "#00FF00"
         main_text = f":rotating_light: RCA complete for {title}"
 
         blocks: list[dict] = [
             {
                 "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": f":rotating_light: RCA: {title[:150]}",
-                    "emoji": True,
-                },
+                "text": {"type": "plain_text", "text": f":rotating_light: RCA: {title[:150]}", "emoji": True},
             },
             {"type": "divider"},
             {
                 "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": ":thread: Investigation complete. See thread for full RCA report.",
-                },
+                "text": {"type": "mrkdwn", "text": ":thread: Investigation complete. See thread for full RCA report."},
             },
         ]
 
-        kwargs: dict[str, Any] = {
-            "channel": channel,
-            "text": main_text,
-            "attachments": [{"color": color, "blocks": blocks}],
-        }
-        if thread_ts:
-            kwargs["thread_ts"] = thread_ts
-
         try:
-            response = client.chat_postMessage(**kwargs)
+            response = client.chat_postMessage(
+                channel=channel,
+                text=main_text,
+                attachments=[{"color": color, "blocks": blocks}],
+            )
             msg_ts = response["ts"]
         except Exception as e:
             log.error(f"Slack post failed: {e}")
             return {}
 
-        # Upload PDF and post permalink in thread (Holmes pattern)
+        # Upload PDF and post permalink in thread
         pdf_uploaded = False
         if pdf_path and os.path.exists(pdf_path):
             try:
@@ -89,8 +152,6 @@ class SlackDestination:
                     filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
                     title=f"RCA - {title}",
                 )
-                # files_upload_v2 sets file_resp["file"] from completeUploadExternal,
-                # but that response may not include permalink — fetch via files.info if needed.
                 file_obj = file_resp.get("file") if file_resp else None
                 if file_obj:
                     permalink = file_obj.get("permalink")
@@ -103,25 +164,17 @@ class SlackDestination:
                         client.chat_postMessage(
                             channel=channel,
                             thread_ts=msg_ts,
-                            text=f":page_facing_up: *Full RCA Report (PDF)*\n<{permalink}|Download RCA: {title}>",
-                            blocks=[
-                                {
-                                    "type": "section",
-                                    "text": {
-                                        "type": "mrkdwn",
-                                        "text": f":page_facing_up: *Full RCA Report*\n<{permalink}|:arrow_down: Download PDF: {title[:60]}>",
-                                    },
-                                }
-                            ],
+                            text=f":page_facing_up: Full RCA Report (PDF)",
+                            blocks=[{
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": f":page_facing_up: <{permalink}|:arrow_down: Download PDF: {title[:60]}>"},
+                            }],
                         )
                         pdf_uploaded = True
-                    else:
-                        log.warning("PDF uploaded but no permalink obtained — falling back to text")
             except Exception as e:
                 log.warning(f"PDF upload failed, falling back to text: {e}")
 
         if not pdf_uploaded:
-            # Fallback: chunked text messages in thread (converted to Slack mrkdwn)
             from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
             slack_text = md_to_slack(strip_code_wrapper(analysis))
             for chunk in chunk_for_slack(slack_text):
@@ -132,7 +185,6 @@ class SlackDestination:
                     blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
                 )
 
-        # Post feedback buttons if we have an incident_id to reference
         if incident_id:
             try:
                 client.chat_postMessage(
@@ -140,28 +192,13 @@ class SlackDestination:
                     thread_ts=msg_ts,
                     text="Was this RCA accurate?",
                     blocks=[
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"},
-                        },
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"}},
                         {
                             "type": "actions",
                             "block_id": f"rca_feedback_{incident_id[:16]}",
                             "elements": [
-                                {
-                                    "type": "button",
-                                    "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True},
-                                    "style": "primary",
-                                    "action_id": "vk_rca_correct",
-                                    "value": incident_id,
-                                },
-                                {
-                                    "type": "button",
-                                    "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True},
-                                    "style": "danger",
-                                    "action_id": "vk_rca_wrong",
-                                    "value": incident_id,
-                                },
+                                {"type": "button", "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True}, "style": "primary", "action_id": "vk_rca_correct", "value": incident_id},
+                                {"type": "button", "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True}, "style": "danger", "action_id": "vk_rca_wrong", "value": incident_id},
                             ],
                         },
                     ],
