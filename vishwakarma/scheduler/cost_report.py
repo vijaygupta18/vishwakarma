@@ -751,12 +751,13 @@ def _analyze_costs(tables_md: str, anomalies: list[dict], anomaly_strs: list[str
     return analysis, severity
 
 
-def _generate_and_post(config, force: bool = True):
+def _generate_and_post(config, force: bool = True, channel: str | None = None, thread_ts: str | None = None):
     """
     Orchestrator: fetch → analyze → PDF → Slack.
 
     force=True  (on-demand via @oogway costs): always post full report
     force=False (scheduled daily run):         only post if anomalies detected
+    channel/thread_ts: if provided, post in that Slack thread (on-demand from @oogway costs)
     """
     cr = config.cost_report
     today = datetime.now(timezone.utc).date().isoformat()
@@ -917,7 +918,8 @@ def _generate_and_post(config, force: bool = True):
             analysis=analysis,
             severity=severity,
             source="cost-explorer",
-            channel=cr["channel"] or None,
+            channel=channel or cr["channel"] or None,
+            thread_ts=thread_ts,
             pdf_path=pdf_path,
         )
         log.info(f"Cost report posted to Slack (severity={severity}, anomalies={len(anomalies)})")

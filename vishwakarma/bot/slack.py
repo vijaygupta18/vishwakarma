@@ -86,8 +86,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             def run_cost_report():
                 try:
                     from vishwakarma.scheduler.cost_report import _generate_and_post
-                    _generate_and_post(config)
-                    say(text="✅ Cost report posted!", thread_ts=thread_ts)
+                    _generate_and_post(config, channel=channel, thread_ts=thread_ts)
                 except Exception as e:
                     log.error(f"On-demand cost report failed: {e}", exc_info=True)
                     say(text=f"❌ Cost report failed: {str(e)[:200]}", thread_ts=thread_ts)
@@ -340,19 +339,81 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             return
 
         def run_investigation():
+            from slack_sdk import WebClient
+            client_sdk = WebClient(token=config.slack_bot_token)
+
             try:
                 llm = config.make_llm()
                 engine = config.make_engine(llm=llm, toolset_manager=toolset_manager)
+                injected = learnings_manager.for_alert(question)
                 extra = (
-                    "## Learned Knowledge\n"
+                    (f"## Relevant Learnings (pre-loaded)\n{injected}\n\n" if injected else "")
+                    + "## Learned Knowledge\n"
                     "Use `learnings_list` to see available learned knowledge categories, "
                     "then `learnings_read(category)` to load the ones relevant to this investigation. "
                     "Do this early in your investigation."
                 )
-                result = engine.investigate(question=full_question, extra_system_prompt=extra)
 
-                analysis = result.answer or "(no analysis)"
-                meta = result.meta.model_dump() if result.meta else {}
+                # Post a live status message for streaming tool call updates
+                status_resp = client_sdk.chat_postMessage(
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text="⏳ Starting investigation...",
+                    blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": "⏳ _Starting investigation..._"}]}],
+                )
+                status_ts = status_resp["ts"]
+
+                tool_lines: list[str] = []
+                analysis = ""
+
+                for event in engine.stream_investigate(question=full_question, extra_system_prompt=extra):
+                    etype = event.get("type", "")
+
+                    if etype == "tool_call_start":
+                        tool = event.get("tool", "")
+                        params = event.get("params", {})
+                        param_str = _short_oracle_params(params)
+                        tool_lines.append(f"⚙ `{tool}({param_str})`")
+                        visible = tool_lines[-10:]
+                        status_text = "\n".join(visible)
+                        try:
+                            client_sdk.chat_update(
+                                channel=channel, ts=status_ts, text=status_text,
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
+                            )
+                        except Exception:
+                            pass
+
+                    elif etype == "tool_call_result":
+                        status = event.get("status", "")
+                        marker = "✓" if status == "success" else "✗"
+                        if tool_lines:
+                            tool_lines[-1] = tool_lines[-1] + f"  {marker}"
+                        visible = tool_lines[-10:]
+                        status_text = "\n".join(visible)
+                        try:
+                            client_sdk.chat_update(
+                                channel=channel, ts=status_ts, text=status_text,
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": status_text}]}],
+                            )
+                        except Exception:
+                            pass
+
+                    elif etype == "done":
+                        analysis = event.get("content", "") or ""
+
+                        # Finalise status message
+                        tool_count = len(tool_lines)
+                        try:
+                            client_sdk.chat_update(
+                                channel=channel, ts=status_ts,
+                                text=f"🔍 {tool_count} tool calls completed",
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · done_"}]}],
+                            )
+                        except Exception:
+                            pass
+
+                meta = {}  # stream mode doesn't return meta directly
 
                 # Generate PDF
                 pdf_path = None
@@ -362,8 +423,6 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         title=question[:80],
                         analysis=analysis,
                         source="slack",
-                        tool_outputs=[o.model_dump() for o in result.tool_outputs],
-                        meta=meta,
                     )
                 except Exception as e:
                     log.warning(f"PDF generation failed: {e}")
@@ -384,7 +443,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         analysis=analysis,
                         source="slack",
                         labels={"slack_user": user, "slack_channel": channel},
-                        tool_outputs=[o.model_dump() for o in result.tool_outputs],
+                        tool_outputs=[],
                         meta=meta,
                         slack_ts=thread_ts,
                         pdf_path=pdf_path,
