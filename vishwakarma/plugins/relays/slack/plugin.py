@@ -52,10 +52,12 @@ class SlackDestination:
             pdf_uploaded = False
             if pdf_path and os.path.exists(pdf_path):
                 try:
+                    with open(pdf_path, "rb") as f:
+                        pdf_bytes = f.read()
                     client.files_upload_v2(
                         channel=channel,
                         thread_ts=msg_ts,
-                        file=pdf_path,
+                        content=pdf_bytes,
                         filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
                         title=f"RCA - {title}",
                         initial_comment=f":page_facing_up: *{title}*",
@@ -129,10 +131,12 @@ class SlackDestination:
         pdf_uploaded = False
         if pdf_path and os.path.exists(pdf_path):
             try:
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
                 client.files_upload_v2(
                     channel=channel,
                     thread_ts=msg_ts,
-                    file=pdf_path,
+                    content=pdf_bytes,
                     filename=f"rca-{title[:40].replace(' ', '-')}.pdf",
                     title=f"RCA - {title}",
                     initial_comment=f":page_facing_up: *Full RCA Report*",
