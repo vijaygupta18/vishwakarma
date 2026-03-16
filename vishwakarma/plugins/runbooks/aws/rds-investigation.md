@@ -22,6 +22,28 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 ---
 
+## Step 0: Alert Freshness Check — Is This Real?
+
+Before investigating, determine if this is a genuine ongoing issue, a resolved transient spike, or a stale/duplicate alert:
+
+**Check current metric value RIGHT NOW:**
+```
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization \
+  --dimensions Name=DBInstanceIdentifier,Value=<instance> \
+  --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 60 --statistics Average Maximum --region <region> --output json
+```
+
+**Interpret:**
+- **Current CPU > threshold** → GENUINE, ONGOING — investigate urgently
+- **Current CPU normal, startsAt < 30 min ago** → RESOLVED, TRANSIENT — still investigate but note self-recovery
+- **Current CPU normal, startsAt > 2 hours ago** → STALE ALERT — note "alert is stale, issue resolved X hours ago" and do a lighter investigation
+- **Alert fingerprint matches a recent investigation** → DUPLICATE — skip
+
+**Include this assessment in your RCA under "Alert Assessment".**
+
+---
+
 ## Step 1: Identify the Affected Instance and Metric
 
 **IMPORTANT: Alarms often resolve before investigation starts. If the alarm state is OK, that is normal — proceed using `startsAt` as your time anchor. Do NOT retry describe-alarms.**
@@ -70,47 +92,42 @@ done
 
 ---
 
-## Step 2: Find the Top Queries Using Performance Insights
+## Step 2: Find the Top Queries — Use Direct Database Access (NOT AWS PI CLI)
 
-**IMPORTANT:** PI requires `DbiResourceId` (e.g. `db-ABCDEF123456`), NOT the DBInstanceIdentifier. Fetch it first.
+**CRITICAL: Do NOT use `aws pi describe-dimension-keys` — it frequently fails with IAM/CLI issues. Instead, query the database directly using `db_query` tool with the PostgreSQL connection.**
 
-**2a — Get DbiResourceId and query PI in one shot:**
+First, run `learnings_read(database)` to get the full PostgreSQL diagnostic query templates.
+
+**2a — Active queries consuming CPU (run on the affected DB's PG connection — bap_pg for customer, bpp_pg for driver):**
 ```
-DBI=$(aws rds describe-db-instances --db-instance-identifier <instance-id> --region <region> \
-  --query 'DBInstances[0].DbiResourceId' --output text)
-
-aws pi describe-dimension-keys \
-  --service-type RDS --identifier $DBI \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --metric db.load.avg \
-  --group-by '{"Group":"db.sql_tokenized","Limit":10}' \
-  --region <region> 2>/dev/null \
-  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.sql_tokenized.statement")"'
+db_query(bap_pg, "SELECT pid, now() - query_start AS duration, state, wait_event_type, wait_event, left(query, 200) as query FROM pg_stat_activity WHERE state = 'active' AND query NOT LIKE '%pg_stat_activity%' ORDER BY duration DESC LIMIT 20")
 ```
 
-**2b — Check wait events in parallel (confirms autovacuum, lock contention, I/O):**
+**2b — Long-running queries (stuck queries causing CPU):**
 ```
-aws pi describe-dimension-keys \
-  --service-type RDS --identifier $DBI \
-  --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --metric db.load.avg \
-  --group-by '{"Group":"db.wait_event","Limit":10}' \
-  --region <region> 2>/dev/null \
-  | jq -r '.Keys[] | "load=\(.Total): \(.Dimensions."db.wait_event.name")"'
+db_query(bap_pg, "SELECT pid, now() - query_start AS duration, state, wait_event_type, wait_event, left(query, 200) as query FROM pg_stat_activity WHERE state = 'active' AND now() - query_start > interval '5 seconds' ORDER BY duration DESC LIMIT 20")
+```
+
+**2c — Connection count by application:**
+```
+db_query(bap_pg, "SELECT application_name, state, count(*) FROM pg_stat_activity GROUP BY application_name, state ORDER BY count DESC LIMIT 30")
+```
+
+**2d — Tables with sequential scans (missing indexes causing CPU):**
+```
+db_query(bap_pg, "SELECT relname, seq_scan, idx_scan, seq_tup_read, CASE WHEN seq_scan > 0 THEN round(seq_tup_read::numeric / seq_scan) ELSE 0 END AS avg_rows_per_scan FROM pg_stat_user_tables WHERE seq_scan > 100 AND seq_tup_read > 100000 ORDER BY seq_tup_read DESC LIMIT 20")
+```
+
+**2e — Lock contention:**
+```
+db_query(bap_pg, "SELECT blocked.pid, left(blocked.query, 100) as blocked_query, blocking.pid as blocking_pid, left(blocking.query, 100) as blocking_query, now() - blocked.query_start AS blocked_duration FROM pg_stat_activity blocked JOIN pg_locks bl ON bl.pid = blocked.pid AND NOT bl.granted JOIN pg_locks kl ON kl.locktype = bl.locktype AND kl.database = bl.database AND kl.relation = bl.relation AND kl.page = bl.page AND kl.tuple = bl.tuple AND kl.pid != bl.pid AND kl.granted JOIN pg_stat_activity blocking ON blocking.pid = kl.pid LIMIT 10")
 ```
 
 Look for:
-- `IO:DataFileRead` dominant → full table scan or missing index
-- `IO:XactSync` + `Timeout:VacuumDelay` → autovacuum
-- `Lock:relation` or `Lock:tuple` → lock contention
-- Top SQL > 40% db.load → single query is the culprit
-
-**If PI returns empty Keys after 2 attempts with different time windows → move to slow query logs:**
-```
-aws rds describe-db-log-files --db-instance-identifier <instance-id> --region <region>
-aws rds download-db-log-file-portion --db-instance-identifier <instance-id> \
-  --log-file-name <most-recent-slow-query-log> --region <region>
-```
+- Long-running queries > 5 seconds → likely culprit
+- High sequential scan count → missing index
+- Many waiting connections → lock contention or pool exhaustion
+- Single query consuming all active connections → kill candidate
 
 ---
 
