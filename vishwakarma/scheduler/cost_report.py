@@ -134,6 +134,111 @@ def _fetch_cost_data(region: str = "ap-south-1") -> dict:
     }
 
 
+def _fetch_hourly_comparison(region: str = "ap-south-1") -> dict | None:
+    """
+    Fetch HOURLY cost data for today + yesterday to:
+    1. Detect if today's data is complete or partial
+    2. Compare today's hourly run rate vs yesterday's
+    3. Project today's full-day cost
+    4. Per-service: what increased and by how much
+
+    Returns dict with today/yesterday hourly breakdown, projection, and per-service comparison.
+    """
+    import boto3
+
+    ce = boto3.client("ce", region_name=region)
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    tomorrow = today + timedelta(days=1)
+
+    resp = ce.get_cost_and_usage(
+        TimePeriod={
+            "Start": f"{yesterday.isoformat()}T00:00:00Z",
+            "End": f"{tomorrow.isoformat()}T00:00:00Z",
+        },
+        Granularity="HOURLY",
+        Metrics=["UnblendedCost"],
+        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
+    )
+
+    # Parse hourly data into today vs yesterday
+    today_str = today.isoformat()
+    yesterday_str = yesterday.isoformat()
+
+    today_total = 0.0
+    yesterday_total = 0.0
+    today_hours = 0
+    yesterday_hours = 0
+    today_svc = {}   # service -> cost
+    yesterday_svc = {}
+
+    for result in resp["ResultsByTime"]:
+        period_start = result["TimePeriod"]["Start"][:10]  # date part
+        hour_total = 0.0
+        for group in result["Groups"]:
+            svc = group["Keys"][0]
+            cost = float(group["Metrics"]["UnblendedCost"]["Amount"])
+            if cost < 0.001:
+                continue
+            hour_total += cost
+            if period_start == today_str:
+                today_svc[svc] = today_svc.get(svc, 0) + cost
+            else:
+                yesterday_svc[svc] = yesterday_svc.get(svc, 0) + cost
+
+        if hour_total > 0.001:
+            if period_start == today_str:
+                today_total += hour_total
+                today_hours += 1
+            else:
+                yesterday_total += hour_total
+                yesterday_hours += 1
+
+    if yesterday_hours == 0:
+        return None
+
+    today_complete = today_hours >= 22  # 22+ hours = effectively complete
+    hourly_rate_today = today_total / max(today_hours, 1)
+    hourly_rate_yesterday = yesterday_total / max(yesterday_hours, 1)
+    projected_today = hourly_rate_today * 24 if not today_complete else today_total
+
+    # Per-service comparison: today's hourly rate vs yesterday's
+    all_svcs = set(list(today_svc.keys()) + list(yesterday_svc.keys()))
+    service_comparison = []
+    for svc in all_svcs:
+        t_cost = today_svc.get(svc, 0)
+        y_cost = yesterday_svc.get(svc, 0)
+        t_rate = t_cost / max(today_hours, 1)
+        y_rate = y_cost / max(yesterday_hours, 1)
+        projected_svc = t_rate * 24 if not today_complete else t_cost
+        diff = projected_svc - y_cost
+        pct = ((projected_svc - y_cost) / y_cost * 100) if y_cost > 0 else (100 if projected_svc > 0 else 0)
+        if t_cost >= 0.10 or y_cost >= 0.10:
+            service_comparison.append({
+                "service": svc,
+                "today_so_far": round(t_cost, 2),
+                "today_projected": round(projected_svc, 2),
+                "yesterday": round(y_cost, 2),
+                "diff": round(diff, 2),
+                "pct_change": round(pct, 1),
+            })
+    service_comparison.sort(key=lambda x: -abs(x["diff"]))
+
+    return {
+        "today_date": today_str,
+        "yesterday_date": yesterday_str,
+        "today_total_so_far": round(today_total, 2),
+        "today_hours": today_hours,
+        "today_complete": today_complete,
+        "today_projected": round(projected_today, 2),
+        "yesterday_total": round(yesterday_total, 2),
+        "yesterday_hours": yesterday_hours,
+        "hourly_rate_today": round(hourly_rate_today, 2),
+        "hourly_rate_yesterday": round(hourly_rate_yesterday, 2),
+        "service_comparison": service_comparison[:15],
+    }
+
+
 def _fetch_usage_breakdown(service_name: str, region: str = "ap-south-1") -> list[dict]:
     """
     For an anomalous service, fetch USAGE_TYPE breakdown (last 2 days vs prior 7).
@@ -691,17 +796,24 @@ def _analyze_costs(tables_md: str, anomalies: list[dict], anomaly_strs: list[str
     if not anomalies:
         prompt = (
             f"{tables_md}\n\n"
-            "Analyze these AWS costs even though no anomalies exceeded the threshold. "
-            "The user still wants to understand where money is going and what changed.\n\n"
+            "Analyze these AWS costs. The user wants to understand where money is going and what changed.\n\n"
+            "IMPORTANT: If today's data is PARTIAL (see 'Today vs Yesterday — Hourly Comparison' section), "
+            "use the PROJECTED full-day cost for today, not the partial amount. Compare today's projected "
+            "cost vs yesterday's actual cost for each service. Explain which services are trending higher "
+            "or lower and why.\n\n"
             "Format your response as:\n"
-            "## Summary\n<2-3 sentences: yesterday's total, day-over-day change, week-over-week trend, month forecast>\n\n"
-            "## Where the Money Goes\n"
-            "<ALL services from the data (at least 10) by cost with % of total. For each: what it is,"
-            "whether it went up or down vs day-before, and why "
-            "(e.g., 'EC2 dropped 13% — likely weekend traffic reduction', "
-            "'ELB stayed flat — fixed ALB hourly charges dominate')>\n\n"
-            "## Day-over-Day Changes\n"
-            "<Services with biggest $ changes vs day-before, explain likely reasons>\n\n"
+            "## Summary\n<2-3 sentences: yesterday's total, today's projected total, hourly burn rate comparison, month forecast>\n\n"
+            "## Today vs Yesterday\n"
+            "<If today is partial: show projected full-day total based on hourly rate. "
+            "Compare today's hourly burn rate vs yesterday's. Is today tracking higher or lower?>\n\n"
+            "## Service-by-Service Analysis\n"
+            "<For EVERY service (at least 10) from the per-service comparison table: "
+            "show today's projected cost vs yesterday's actual cost, the $ and % change, "
+            "and explain WHY it changed. Examples:\n"
+            "- 'EC2 Compute: projected $340 today vs $320 yesterday (+$20, +6.3%) — higher traffic during business hours'\n"
+            "- 'ELB: projected $275 today vs $272 yesterday (+$3, +1.1%) — stable, mostly fixed hourly charges'\n"
+            "- 'RDS: projected $225 today vs $229 yesterday (-$4, -1.7%) — slightly lower I/O'\n"
+            "Mark any service with >15% increase as needing attention.>\n\n"
             "## Month Outlook\n<projected month total from forecast, whether on track vs last month>\n"
         )
     else:
@@ -855,7 +967,19 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
             _status(f"⚙ `cloudwatch:metrics({short_name})`  ✗")
             log.warning(f"Failed to fetch CloudWatch drivers for {svc}: {e}")
 
-    # 6. Fetch month-end cost forecast
+    # 6. Fetch hourly today vs yesterday comparison
+    _status("⚙ `ce:GetCostAndUsage(HOURLY, today vs yesterday)`")
+    hourly = None
+    try:
+        hourly = _fetch_hourly_comparison(region=cr["region"])
+        if hourly:
+            complete = "complete" if hourly["today_complete"] else f"partial ({hourly['today_hours']}h)"
+            _status(f"⚙ `ce:HOURLY`  ✓ today={complete}, ${hourly['today_total_so_far']:.0f} so far")
+    except Exception as e:
+        _status("⚙ `ce:HOURLY`  ✗")
+        log.warning(f"Hourly comparison failed: {e}")
+
+    # 7. Fetch month-end cost forecast
     _status("⚙ `ce:GetCostForecast`")
     forecast = None
     try:
@@ -939,9 +1063,44 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         tables_md += f"- Actual spend this month so far: ${actual_so_far:.2f} ({days_elapsed} days)\n"
         tables_md += f"- **Estimated month total: ${est_month_total:.2f}**\n"
 
-    # 7. LLM analysis
+    # Add hourly today vs yesterday comparison
+    if hourly:
+        status_label = "COMPLETE" if hourly["today_complete"] else f"PARTIAL ({hourly['today_hours']}h of data)"
+        tables_md += f"\n\n## Today vs Yesterday — Hourly Comparison\n"
+        tables_md += f"**Today ({hourly['today_date']}): {status_label}**\n"
+        tables_md += f"- Spend so far: ${hourly['today_total_so_far']:.2f} ({hourly['today_hours']} hours)\n"
+        tables_md += f"- Hourly burn rate: ${hourly['hourly_rate_today']:.2f}/hr\n"
+        if not hourly["today_complete"]:
+            tables_md += f"- **Projected full day: ${hourly['today_projected']:.2f}**\n"
+        tables_md += f"\n**Yesterday ({hourly['yesterday_date']}): COMPLETE**\n"
+        tables_md += f"- Total: ${hourly['yesterday_total']:.2f} ({hourly['yesterday_hours']} hours)\n"
+        tables_md += f"- Hourly burn rate: ${hourly['hourly_rate_yesterday']:.2f}/hr\n"
+        rate_diff = hourly["hourly_rate_today"] - hourly["hourly_rate_yesterday"]
+        rate_pct = ((rate_diff / hourly["hourly_rate_yesterday"]) * 100) if hourly["hourly_rate_yesterday"] > 0 else 0
+        tables_md += f"\n**Hourly rate change: {rate_diff:+.2f}/hr ({rate_pct:+.1f}%)**\n"
+
+        tables_md += f"\n### Per-Service: Today (projected) vs Yesterday\n"
+        tables_md += "| Service | Today So Far ($) | Projected ($) | Yesterday ($) | Change ($) | Change % |\n"
+        tables_md += "|---------|------------------|---------------|---------------|------------|----------|\n"
+        for sc in hourly["service_comparison"]:
+            flag = ""
+            if sc["pct_change"] > 15:
+                flag = " <-- UP"
+            elif sc["pct_change"] < -15:
+                flag = " <-- DOWN"
+            tables_md += (
+                f"| {sc['service']} | {sc['today_so_far']:.2f} | {sc['today_projected']:.2f} "
+                f"| {sc['yesterday']:.2f} | {sc['diff']:+.2f} | {sc['pct_change']:+.1f}% |{flag}\n"
+            )
+
+    # LLM analysis — use the latest COMPLETE day for title
+    # If today is partial, title should say yesterday's date
     latest_date = data["dates_sorted"][-1]
-    title = f"AWS Cost Report — {latest_date}"
+    if hourly and not hourly["today_complete"]:
+        # Today is partial — use yesterday as main reference
+        title = f"AWS Cost Report — {hourly['yesterday_date']} (+ today partial)"
+    else:
+        title = f"AWS Cost Report — {latest_date}"
     if anomalies:
         title = f"AWS Cost Alert — {len(anomalies)} anomalies — {latest_date}"
 
