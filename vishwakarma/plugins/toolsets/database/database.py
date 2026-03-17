@@ -218,6 +218,7 @@ class DatabaseToolset(Toolset):
                     connect_timeout=10,
                     options="-c default_transaction_read_only=on -c statement_timeout=10000",
                 )
+                conn.autocommit = True
             elif db_type == "mysql":
                 import pymysql
                 conn = pymysql.connect(
@@ -361,7 +362,7 @@ class DatabaseToolset(Toolset):
             else:
                 with conn.cursor() as cur:
                     cur.execute(query)
-                    rows = cur.fetchall()
+                    rows = cur.fetchmany(_MAX_ROWS + 1)
                     if not rows:
                         return ToolOutput(status=ToolStatus.NO_DATA, invocation=invocation)
                     rows, warning = self._truncate_rows(rows)
@@ -417,7 +418,7 @@ class DatabaseToolset(Toolset):
 
             with conn.cursor() as cur:
                 cur.execute(query)
-                rows = cur.fetchall()
+                rows = cur.fetchmany(_MAX_ROWS + 1)
                 if not rows:
                     return ToolOutput(status=ToolStatus.NO_DATA, invocation=invocation)
                 rows, warning = self._truncate_rows(rows)
@@ -486,7 +487,7 @@ class DatabaseToolset(Toolset):
                 )
                 with conn.cursor() as cur:
                     cur.execute(query, (table,))
-                    rows = cur.fetchall()
+                    rows = cur.fetchmany(_MAX_ROWS + 1)
                     if not rows:
                         return ToolOutput(status=ToolStatus.NO_DATA, invocation=invocation)
                     rows, warning = self._truncate_rows(rows)
@@ -502,7 +503,7 @@ class DatabaseToolset(Toolset):
 
             with conn.cursor() as cur:
                 cur.execute(query)
-                rows = cur.fetchall()
+                rows = cur.fetchmany(_MAX_ROWS + 1)
                 if not rows:
                     return ToolOutput(status=ToolStatus.NO_DATA, invocation=invocation)
                 rows, warning = self._truncate_rows(rows)

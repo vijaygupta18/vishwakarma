@@ -79,8 +79,6 @@ SAFE_BASH_COMMANDS = [
     "env",
     "printenv",
     "which",
-    "curl",
-    "wget",
     "dig",
     "nslookup",
     "ping",
@@ -103,6 +101,19 @@ HARDCODED_BLOCK = [
     "mkfs",
     "fdisk",
     "> /dev/sda",
+    # Prevent code execution that can construct blocked commands at runtime
+    "eval ",
+    "base64 -d",
+    "base64 --decode",
+    "python3 -c",
+    "python -c",
+    "perl -e",
+    "ruby -e",
+    "node -e",
+    "/dev/tcp",
+    "/dev/udp",
+    "nohup ",
+    "crontab",
 ]
 
 

@@ -226,6 +226,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
                     tool_lines: list[str] = []
                     analysis = ""
+                    done_handled = False
 
                     for event in engine.stream_investigate(question=q, extra_system_prompt=extra, history=history):
                         etype = event.get("type", "")
@@ -275,6 +276,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                             analysis = event.get("content", "") or "Investigation reached maximum steps without a final conclusion."
 
                         elif etype == "done":
+                            done_handled = True
                             analysis = event.get("content", "") or analysis or ""
                             # Update history from full messages if available
                             full_messages = event.get("messages")
@@ -327,6 +329,40 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                 text=f"Turn {turn} — ask a follow-up or @oogway oracle stop to end",
                                 blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Turn {turn} · Session `{sid[:8]}...` · Ask a follow-up or `@oogway oracle stop` to end_"}]}],
                             )
+
+                    # Post-loop: if max_steps_reached fired but done never came
+                    if analysis and not done_handled:
+                        new_history = list(history)
+                        new_history.append({"role": "user", "content": q})
+                        new_history.append({"role": "assistant", "content": analysis})
+                        with _oracle_lock:
+                            _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history, "_created": time.time()}
+                        try:
+                            from vishwakarma.storage.queries import save_oracle_session
+                            save_oracle_session(sid, new_history)
+                        except Exception:
+                            pass
+                        tool_count = len(tool_lines)
+                        try:
+                            client_sdk.chat_update(
+                                channel=channel, ts=status_ts,
+                                text=f"🔍 {tool_count} tool calls · done",
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · done (max steps)_"}]}],
+                            )
+                        except Exception:
+                            pass
+                        from vishwakarma.utils.slack_format import md_to_slack, chunk_for_slack, strip_code_wrapper
+                        slack_text = md_to_slack(strip_code_wrapper(analysis))
+                        for chunk in chunk_for_slack(slack_text):
+                            client_sdk.chat_postMessage(
+                                channel=channel, thread_ts=t_ts, text=chunk,
+                                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
+                            )
+                        turn = len(new_history) // 2
+                        client_sdk.chat_postMessage(
+                            channel=channel, thread_ts=t_ts, text=f"Turn {turn}",
+                            blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Turn {turn} · Session `{sid[:8]}...` · Ask a follow-up or `@oogway oracle stop` to end_"}]}],
+                        )
 
                 except Exception as e:
                     log.error(f"Oracle investigation failed: {e}", exc_info=True)
