@@ -22,6 +22,12 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 ---
 
+## IMPORTANT: Tool Routing
+- **RDS metrics (CPU, connections, IOPS, memory)**: Use `aws cloudwatch get-metric-statistics` via bash — NOT prometheus. RDS metrics are NOT in Prometheus.
+- **Business impact (5xx, latency, ride-to-search)**: Use `prometheus_query_range` — these ARE application metrics in Prometheus.
+- **Application/DB logs**: Use `elasticsearch_search`
+- **Direct SQL diagnostics**: Use `db_query(bap_pg)` or `db_query(bpp_pg)` for pg_stat_activity
+
 ## Step 0: Alert Freshness Check — Is This Real?
 
 Before investigating, determine if this is a genuine ongoing issue, a resolved transient spike, or a stale/duplicate alert:

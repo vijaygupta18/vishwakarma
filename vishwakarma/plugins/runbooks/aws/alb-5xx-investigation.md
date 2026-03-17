@@ -129,10 +129,10 @@ Find pods for the failing service:
 `kubectl get pods -A | grep -i <service-name-from-step-3>`
 
 Check for crash loops or OOMKilled:
-`kubectl describe pod -n atlas <pod-name> | grep -A5 "Last State\|OOMKilled\|Reason"`
+`kubectl describe pod -n <namespace> <pod-name> | grep -A5 "Last State\|OOMKilled\|Reason"`
 
 Grep live pod logs for the same error pattern:
-`timeout 30 stern -n atlas <service-name> --since 30m | grep -iE "error|exception|redis|db|timeout|refused" | head -200`
+`timeout 30 stern -n <namespace> <service-name> --since 30m | grep -iE "error|exception|redis|db|timeout|refused" | head -200`
 
 Check recent deployments:
 `kubectl get events -A --sort-by='.lastTimestamp' | grep -iE "pulled|deploy|image" | tail -10`

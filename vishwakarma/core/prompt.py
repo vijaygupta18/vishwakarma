@@ -186,6 +186,11 @@ GENERAL_GUIDELINES = """\
 - Distinguish cause from symptom (high CPU is usually a symptom, not a cause)
 - Treat error messages as exact diagnostic evidence: `authentication failed` means the user EXISTS and password is wrong — never add "or the user may not exist"
 - **NEVER use metric values from the alert payload as evidence.** The alert datapoints (e.g. `[91.2, 88.5, 85.1]`) are what triggered the alarm — always fetch actual values from CloudWatch with `get-metric-statistics` at 1-minute resolution to confirm real numbers.
+- **For AWS managed service metrics (RDS, ElastiCache, ALB, etc.): Use `aws cloudwatch get-metric-statistics` via bash.** These metrics are typically NOT in Prometheus. Only use prometheus for application-level metrics (error rates, latency, custom counters).
+- **For application database queries: Use `db_query` if the database toolset is enabled.** Read `learnings_read(database)` first for table schemas and query patterns. Prefer the primary data connection (e.g., analytics DB) over production replicas.
+
+**Baseline comparison — is this error new or pre-existing?**
+Before concluding that ANY log error or pattern is caused by the current alert, check if the SAME error also appears in yesterday's logs at the same time window. If it does, the error is pre-existing and NOT caused by this alert — do not include it as evidence. Only errors that are NEW (not present yesterday) or significantly INCREASED (10x more frequent than yesterday) are relevant evidence. This applies to all error types: application errors, connection failures, timeout errors, decode failures, config errors, etc.
 
 **Five Whys — drill to root cause, not just symptoms:**
 Keep asking "why" until you reach the actual cause. High CPU is a symptom. "autovacuum on large TOAST table because dead tuple bloat exceeded threshold" is a root cause.

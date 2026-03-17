@@ -17,7 +17,21 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 - Redis cluster IDs (replication group names) and their roles
 - Elasticsearch endpoint + app log index name
 
+## IMPORTANT: Tool Routing
+- **ElastiCache metrics**: Use `aws cloudwatch get-metric-statistics` via bash — NOT prometheus. ElastiCache metrics are NOT scraped into Prometheus/VictoriaMetrics.
+- **Application logs**: Use `elasticsearch_search` tool
+- **Redis key analysis**: Use bash with `aws elasticache` CLI commands
+
 ## Workflow
+
+### Step 0: Alert Freshness Check
+Check current metric value to determine if this is genuine, resolved, or stale:
+```
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <5min ago> --end-time <now> --period 60 --statistics Average Maximum --region <region>
+```
+- **Current value > threshold** → GENUINE, investigate urgently
+- **Current value normal, startsAt < 30 min ago** → RESOLVED, transient — lighter investigation
+- **Current value normal, startsAt > 2 hours ago** → STALE — note and move on
 
 ### Step 1: List ALL Clusters and Find the Alerting One
 First, get all ElastiCache replication groups in the account:
