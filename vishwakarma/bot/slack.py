@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import threading
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -43,11 +44,24 @@ def start_bot(config: "VishwakarmaConfig") -> None:
     _oracle_sessions: dict[str, dict] = {}
     _oracle_lock = threading.Lock()
 
+    # ── Concurrency guard ──────────────────────────────────────────────────────
+    _active_investigations = 0
+    _investigation_limit = 2
+    _inv_lock = threading.Lock()
+
     # ── Event handlers ────────────────────────────────────────────────────────
 
     @app.event("app_mention")
     def handle_mention(event, say, client):
         log.info(f"[EVENT RAW] {json.dumps(event, default=str)}")
+
+        # ── Oracle session TTL: evict sessions older than 2 hours ──────────
+        with _oracle_lock:
+            stale = [ts for ts, s in _oracle_sessions.items()
+                     if s.get("_created", 0) and time.time() - s["_created"] > 7200]
+            for ts in stale:
+                _oracle_sessions.pop(ts, None)
+
         text = event.get("text", "")
         channel = event.get("channel", "")
         thread_ts = event.get("thread_ts") or event.get("ts")
@@ -143,7 +157,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 from vishwakarma.storage.queries import load_oracle_session
                 history = load_oracle_session(session_id) or []
                 with _oracle_lock:
-                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": history}
+                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": history, "_created": time.time()}
                 say(text=f"🔮 Oracle session resumed (`{session_id[:8]}...`) — {len(history)} messages in history. Ask your next question.", thread_ts=thread_ts)
             except Exception as e:
                 say(text=f"❌ Could not resume session: {e}", thread_ts=thread_ts)
@@ -163,7 +177,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 if thread_ts not in _oracle_sessions:
                     import uuid
                     session_id = str(uuid.uuid4())
-                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": []}
+                    _oracle_sessions[thread_ts] = {"session_id": session_id, "history": [], "_created": time.time()}
                     new_session = True
                 else:
                     session_id = _oracle_sessions[thread_ts]["session_id"]
@@ -174,8 +188,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             say(text=f":mag: Investigating: *{oracle_question[:100]}*...", thread_ts=thread_ts)
 
             def run_oracle(q=oracle_question, sid=session_id, t_ts=thread_ts):
+                nonlocal _active_investigations
+                with _inv_lock:
+                    if _active_investigations >= _investigation_limit:
+                        say(text="Investigation queue full, try again in a few minutes.", thread_ts=t_ts)
+                        return
+                    _active_investigations += 1
+
                 from slack_sdk import WebClient
                 client_sdk = WebClient(token=config.slack_bot_token)
+                status_ts = None
 
                 try:
                     with _oracle_lock:
@@ -229,8 +251,14 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         elif etype == "tool_call_result":
                             status = event.get("status", "")
                             marker = "✓" if status == "success" else "✗"
-                            if tool_lines:
-                                tool_lines[-1] = tool_lines[-1] + f"  {marker}"
+                            tool_name = event.get("tool", "")
+                            for i in range(len(tool_lines) - 1, -1, -1):
+                                if tool_name and f"`{tool_name}(" in tool_lines[i] and "✓" not in tool_lines[i] and "✗" not in tool_lines[i]:
+                                    tool_lines[i] = tool_lines[i] + f"  {marker}"
+                                    break
+                            else:
+                                if tool_lines:
+                                    tool_lines[-1] = tool_lines[-1] + f"  {marker}"
                             visible = tool_lines[-10:]
                             status_text = "\n".join(visible)
                             try:
@@ -243,8 +271,11 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                             except Exception as _e:
                                 log.debug(f"Status update failed (non-fatal): {_e}")
 
+                        elif etype == "max_steps_reached":
+                            analysis = event.get("content", "") or "Investigation reached maximum steps without a final conclusion."
+
                         elif etype == "done":
-                            analysis = event.get("content", "") or ""
+                            analysis = event.get("content", "") or analysis or ""
                             # Update history from full messages if available
                             full_messages = event.get("messages")
                             if full_messages:
@@ -255,7 +286,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                                 new_history.append({"role": "assistant", "content": analysis})
 
                             with _oracle_lock:
-                                _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history}
+                                _oracle_sessions[t_ts] = {"session_id": sid, "history": new_history, "_created": time.time()}
 
                             # Persist to SQLite
                             try:
@@ -299,10 +330,21 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
                 except Exception as e:
                     log.error(f"Oracle investigation failed: {e}", exc_info=True)
+                    if status_ts:
+                        try:
+                            client_sdk.chat_update(
+                                channel=channel, ts=status_ts, text="❌ Investigation failed",
+                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": "❌ _Investigation failed_"}]}],
+                            )
+                        except Exception:
+                            pass
                     try:
                         say(text=f"❌ Oracle failed: {str(e)[:200]}", thread_ts=t_ts)
                     except Exception:
                         pass
+                finally:
+                    with _inv_lock:
+                        _active_investigations -= 1
 
             threading.Thread(target=run_oracle, daemon=True).start()
             return
@@ -339,8 +381,16 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             return
 
         def run_investigation():
+            nonlocal _active_investigations
+            with _inv_lock:
+                if _active_investigations >= _investigation_limit:
+                    say(text="Investigation queue full, try again in a few minutes.", thread_ts=thread_ts)
+                    return
+                _active_investigations += 1
+
             from slack_sdk import WebClient
             client_sdk = WebClient(token=config.slack_bot_token)
+            status_ts = None
 
             try:
                 llm = config.make_llm()
@@ -387,8 +437,14 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                     elif etype == "tool_call_result":
                         status = event.get("status", "")
                         marker = "✓" if status == "success" else "✗"
-                        if tool_lines:
-                            tool_lines[-1] = tool_lines[-1] + f"  {marker}"
+                        tool_name = event.get("tool", "")
+                        for i in range(len(tool_lines) - 1, -1, -1):
+                            if tool_name and f"`{tool_name}(" in tool_lines[i] and "✓" not in tool_lines[i] and "✗" not in tool_lines[i]:
+                                tool_lines[i] = tool_lines[i] + f"  {marker}"
+                                break
+                        else:
+                            if tool_lines:
+                                tool_lines[-1] = tool_lines[-1] + f"  {marker}"
                         visible = tool_lines[-10:]
                         status_text = "\n".join(visible)
                         try:
@@ -399,8 +455,11 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                         except Exception:
                             pass
 
+                    elif etype == "max_steps_reached":
+                        analysis = event.get("content", "") or "Investigation reached maximum steps without a final conclusion."
+
                     elif etype == "done":
-                        analysis = event.get("content", "") or ""
+                        analysis = event.get("content", "") or analysis or ""
 
                         # Finalise status message
                         tool_count = len(tool_lines)
@@ -429,7 +488,7 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                 inc_id = None
                 try:
                     from vishwakarma.storage.queries import save_incident
-                    import hashlib, time
+                    import hashlib
                     inc_id = hashlib.md5(f"slack:{question}:{time.time()}".encode()).hexdigest()
                     save_incident(
                         incident_id=inc_id,
@@ -497,10 +556,21 @@ def start_bot(config: "VishwakarmaConfig") -> None:
 
             except Exception as e:
                 log.error(f"Investigation failed: {e}", exc_info=True)
+                if status_ts:
+                    try:
+                        client_sdk.chat_update(
+                            channel=channel, ts=status_ts, text="❌ Investigation failed",
+                            blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": "❌ _Investigation failed_"}]}],
+                        )
+                    except Exception:
+                        pass
                 try:
                     say(text=f"❌ Investigation failed: {str(e)[:200]}", thread_ts=thread_ts)
                 except Exception:
                     pass
+            finally:
+                with _inv_lock:
+                    _active_investigations -= 1
 
         t = threading.Thread(target=run_investigation, daemon=True)
         t.start()

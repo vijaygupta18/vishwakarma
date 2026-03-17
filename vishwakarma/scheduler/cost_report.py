@@ -13,6 +13,10 @@ from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
+# ── Concurrency guards ──────────────────────────────────────────────────────
+_cost_report_lock = threading.Lock()
+_investigation_running = threading.Event()  # set() = running, clear() = idle
+
 
 def start_cost_reporter(config) -> None:
     """Start the daily cost report scheduler. Called from cli.py:serve()."""
@@ -80,18 +84,28 @@ def _fetch_cost_data(region: str = "ap-south-1") -> dict:
     end = datetime.now(timezone.utc).date() + timedelta(days=1)
     start = end - timedelta(days=31)
 
-    resp = ce.get_cost_and_usage(
-        TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
-        Granularity="DAILY",
-        Metrics=["UnblendedCost"],
-        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-    )
+    all_results = []
+    next_token = None
+    while True:
+        kwargs = {
+            "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
+            "Granularity": "DAILY",
+            "Metrics": ["UnblendedCost"],
+            "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+        }
+        if next_token:
+            kwargs["NextPageToken"] = next_token
+        resp = ce.get_cost_and_usage(**kwargs)
+        all_results.extend(resp["ResultsByTime"])
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
 
     # Parse into structured data
     daily_totals = {}  # date -> total
     service_costs = {}  # service -> {date -> cost}
 
-    for result in resp["ResultsByTime"]:
+    for result in all_results:
         date = result["TimePeriod"]["Start"]
         day_total = 0.0
         for group in result["Groups"]:
@@ -107,7 +121,7 @@ def _fetch_cost_data(region: str = "ap-south-1") -> dict:
 
     # Compute averages using days 3-23 (exclude last 2 days + first 5 for stable baseline)
     avg_dates = dates_sorted[5:-2] if len(dates_sorted) > 7 else dates_sorted[:-2] if len(dates_sorted) > 2 else dates_sorted
-    seven_day_avg = sum(daily_totals[d] for d in avg_dates) / max(len(avg_dates), 1)
+    baseline_avg = sum(daily_totals[d] for d in avg_dates) / max(len(avg_dates), 1)
 
     # Service-level averages
     service_avgs = {}
@@ -126,7 +140,7 @@ def _fetch_cost_data(region: str = "ap-south-1") -> dict:
         "daily_totals": daily_totals,
         "service_costs": service_costs,
         "service_avgs": service_avgs,
-        "seven_day_avg": round(seven_day_avg, 2),
+        "baseline_avg": round(baseline_avg, 2),
         "dates_sorted": dates_sorted,
         "last_7_total": round(last_7_total, 2),
         "prior_7_total": round(prior_7_total, 2),
@@ -151,15 +165,25 @@ def _fetch_hourly_comparison(region: str = "ap-south-1") -> dict | None:
     yesterday = today - timedelta(days=1)
     tomorrow = today + timedelta(days=1)
 
-    resp = ce.get_cost_and_usage(
-        TimePeriod={
-            "Start": f"{yesterday.isoformat()}T00:00:00Z",
-            "End": f"{tomorrow.isoformat()}T00:00:00Z",
-        },
-        Granularity="HOURLY",
-        Metrics=["UnblendedCost"],
-        GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-    )
+    all_results = []
+    next_token = None
+    while True:
+        kwargs = {
+            "TimePeriod": {
+                "Start": f"{yesterday.isoformat()}T00:00:00Z",
+                "End": f"{tomorrow.isoformat()}T00:00:00Z",
+            },
+            "Granularity": "HOURLY",
+            "Metrics": ["UnblendedCost"],
+            "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+        }
+        if next_token:
+            kwargs["NextPageToken"] = next_token
+        resp = ce.get_cost_and_usage(**kwargs)
+        all_results.extend(resp["ResultsByTime"])
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
 
     # Parse hourly data into today vs yesterday
     today_str = today.isoformat()
@@ -172,7 +196,7 @@ def _fetch_hourly_comparison(region: str = "ap-south-1") -> dict | None:
     today_svc = {}   # service -> cost
     yesterday_svc = {}
 
-    for result in resp["ResultsByTime"]:
+    for result in all_results:
         period_start = result["TimePeriod"]["Start"][:10]  # date part
         hour_total = 0.0
         for group in result["Groups"]:
@@ -200,7 +224,13 @@ def _fetch_hourly_comparison(region: str = "ap-south-1") -> dict | None:
     today_complete = today_hours >= 22  # 22+ hours = effectively complete
     hourly_rate_today = today_total / max(today_hours, 1)
     hourly_rate_yesterday = yesterday_total / max(yesterday_hours, 1)
-    projected_today = hourly_rate_today * 24 if not today_complete else today_total
+
+    # Guard: don't project if we have fewer than 4 hours of data — too unreliable
+    insufficient_data = today_hours < 4 and not today_complete
+    if insufficient_data:
+        projected_today = None
+    else:
+        projected_today = hourly_rate_today * 24 if not today_complete else today_total
 
     # Per-service comparison: today's hourly rate vs yesterday's
     all_svcs = set(list(today_svc.keys()) + list(yesterday_svc.keys()))
@@ -210,33 +240,41 @@ def _fetch_hourly_comparison(region: str = "ap-south-1") -> dict | None:
         y_cost = yesterday_svc.get(svc, 0)
         t_rate = t_cost / max(today_hours, 1)
         y_rate = y_cost / max(yesterday_hours, 1)
-        projected_svc = t_rate * 24 if not today_complete else t_cost
-        diff = projected_svc - y_cost
-        pct = ((projected_svc - y_cost) / y_cost * 100) if y_cost > 0 else (100 if projected_svc > 0 else 0)
+        if insufficient_data:
+            projected_svc = None
+            diff = None
+            pct = None
+        else:
+            projected_svc = t_rate * 24 if not today_complete else t_cost
+            diff = projected_svc - y_cost
+            pct = ((projected_svc - y_cost) / y_cost * 100) if y_cost > 0 else (100 if projected_svc > 0 else 0)
         if t_cost >= 0.10 or y_cost >= 0.10:
             service_comparison.append({
                 "service": svc,
                 "today_so_far": round(t_cost, 2),
-                "today_projected": round(projected_svc, 2),
+                "today_projected": round(projected_svc, 2) if projected_svc is not None else None,
                 "yesterday": round(y_cost, 2),
-                "diff": round(diff, 2),
-                "pct_change": round(pct, 1),
+                "diff": round(diff, 2) if diff is not None else None,
+                "pct_change": round(pct, 1) if pct is not None else None,
             })
-    service_comparison.sort(key=lambda x: -abs(x["diff"]))
+    service_comparison.sort(key=lambda x: -abs(x["diff"] or 0))
 
-    return {
+    result = {
         "today_date": today_str,
         "yesterday_date": yesterday_str,
         "today_total_so_far": round(today_total, 2),
         "today_hours": today_hours,
         "today_complete": today_complete,
-        "today_projected": round(projected_today, 2),
+        "today_projected": round(projected_today, 2) if projected_today is not None else None,
         "yesterday_total": round(yesterday_total, 2),
         "yesterday_hours": yesterday_hours,
         "hourly_rate_today": round(hourly_rate_today, 2),
         "hourly_rate_yesterday": round(hourly_rate_yesterday, 2),
         "service_comparison": service_comparison[:15],
     }
+    if insufficient_data:
+        result["note"] = "insufficient data for projection"
+    return result
 
 
 def _fetch_usage_breakdown(service_name: str, region: str = "ap-south-1") -> list[dict]:
@@ -254,18 +292,28 @@ def _fetch_usage_breakdown(service_name: str, region: str = "ap-south-1") -> lis
     end = datetime.now(timezone.utc).date() + timedelta(days=1)
     start = end - timedelta(days=10)
 
-    resp = ce.get_cost_and_usage(
-        TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
-        Granularity="DAILY",
-        Metrics=["UnblendedCost"],
-        Filter={"Dimensions": {"Key": "SERVICE", "Values": [service_name]}},
-        GroupBy=[{"Type": "DIMENSION", "Key": "USAGE_TYPE"}],
-    )
+    all_results = []
+    next_token = None
+    while True:
+        kwargs = {
+            "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
+            "Granularity": "DAILY",
+            "Metrics": ["UnblendedCost"],
+            "Filter": {"Dimensions": {"Key": "SERVICE", "Values": [service_name]}},
+            "GroupBy": [{"Type": "DIMENSION", "Key": "USAGE_TYPE"}],
+        }
+        if next_token:
+            kwargs["NextPageToken"] = next_token
+        resp = ce.get_cost_and_usage(**kwargs)
+        all_results.extend(resp["ResultsByTime"])
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
 
     # Parse: usage_type -> {date -> cost}
     usage_by_date = {}  # usage_type -> {date -> cost}
     dates = []
-    for result in resp["ResultsByTime"]:
+    for result in all_results:
         date = result["TimePeriod"]["Start"]
         dates.append(date)
         for group in result["Groups"]:
@@ -319,17 +367,27 @@ def _fetch_operation_breakdown(service_name: str, region: str = "ap-south-1") ->
     end = datetime.now(timezone.utc).date() + timedelta(days=1)
     start = end - timedelta(days=10)
 
-    resp = ce.get_cost_and_usage(
-        TimePeriod={"Start": start.isoformat(), "End": end.isoformat()},
-        Granularity="DAILY",
-        Metrics=["UnblendedCost"],
-        Filter={"Dimensions": {"Key": "SERVICE", "Values": [service_name]}},
-        GroupBy=[{"Type": "DIMENSION", "Key": "OPERATION"}],
-    )
+    all_results = []
+    next_token = None
+    while True:
+        kwargs = {
+            "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
+            "Granularity": "DAILY",
+            "Metrics": ["UnblendedCost"],
+            "Filter": {"Dimensions": {"Key": "SERVICE", "Values": [service_name]}},
+            "GroupBy": [{"Type": "DIMENSION", "Key": "OPERATION"}],
+        }
+        if next_token:
+            kwargs["NextPageToken"] = next_token
+        resp = ce.get_cost_and_usage(**kwargs)
+        all_results.extend(resp["ResultsByTime"])
+        next_token = resp.get("NextPageToken")
+        if not next_token:
+            break
 
     ops_by_date = {}
     dates = []
-    for result in resp["ResultsByTime"]:
+    for result in all_results:
         date = result["TimePeriod"]["Start"]
         dates.append(date)
         for group in result["Groups"]:
@@ -451,18 +509,19 @@ def _discover_alb_resources(region: str) -> list[dict]:
     """Discover ALBs and return CloudWatch dimension sets."""
     import boto3
     client = boto3.client("elbv2", region_name=region)
-    lbs = client.describe_load_balancers()["LoadBalancers"]
+    paginator = client.get_paginator("describe_load_balancers")
     results = []
-    for lb in lbs:
-        if lb["Type"] == "application":
-            # CloudWatch dimension: LoadBalancer = app/name/id (strip arn prefix)
-            arn = lb["LoadBalancerArn"]
-            # arn:aws:elasticloadbalancing:region:account:loadbalancer/app/name/id
-            dim_value = "/".join(arn.split("loadbalancer/")[1:]) if "loadbalancer/" in arn else arn
-            results.append({
-                "name": lb["LoadBalancerName"],
-                "dimensions": [{"Name": "LoadBalancer", "Value": dim_value}],
-            })
+    for page in paginator.paginate():
+        for lb in page["LoadBalancers"]:
+            if lb["Type"] == "application":
+                # CloudWatch dimension: LoadBalancer = app/name/id (strip arn prefix)
+                arn = lb["LoadBalancerArn"]
+                # arn:aws:elasticloadbalancing:region:account:loadbalancer/app/name/id
+                dim_value = "/".join(arn.split("loadbalancer/")[1:]) if "loadbalancer/" in arn else arn
+                results.append({
+                    "name": lb["LoadBalancerName"],
+                    "dimensions": [{"Name": "LoadBalancer", "Value": dim_value}],
+                })
     return results
 
 
@@ -471,7 +530,10 @@ def _discover_rds_resources(region: str) -> list[dict]:
     Sorted by instance size (largest first) so the cap-at-5 gets the most expensive ones."""
     import boto3
     client = boto3.client("rds", region_name=region)
-    instances = client.describe_db_instances()["DBInstances"]
+    paginator = client.get_paginator("describe_db_instances")
+    instances = []
+    for page in paginator.paginate():
+        instances.extend(page["DBInstances"])
     # Sort: writer instances first, then by instance class descending (larger = more expensive)
     instances.sort(key=lambda i: (
         0 if not i.get("ReadReplicaSourceDBInstanceIdentifier") else 1,
@@ -490,7 +552,10 @@ def _discover_elasticache_resources(region: str) -> list[dict]:
     """Discover ElastiCache clusters and return CloudWatch dimension sets."""
     import boto3
     client = boto3.client("elasticache", region_name=region)
-    clusters = client.describe_cache_clusters()["CacheClusters"]
+    paginator = client.get_paginator("describe_cache_clusters")
+    clusters = []
+    for page in paginator.paginate():
+        clusters.extend(page["CacheClusters"])
     return [
         {
             "name": c["CacheClusterId"],
@@ -504,9 +569,10 @@ def _discover_nat_resources(region: str) -> list[dict]:
     """Discover NAT Gateways and return CloudWatch dimension sets."""
     import boto3
     client = boto3.client("ec2", region_name=region)
-    nats = client.describe_nat_gateways(
-        Filter=[{"Name": "state", "Values": ["available"]}]
-    )["NatGateways"]
+    paginator = client.get_paginator("describe_nat_gateways")
+    nats = []
+    for page in paginator.paginate(Filter=[{"Name": "state", "Values": ["available"]}]):
+        nats.extend(page["NatGateways"])
     return [
         {
             "name": n["NatGatewayId"],
@@ -587,7 +653,7 @@ def _fetch_cost_driver_metrics(service_name: str, region: str) -> str | None:
                     w_str = _format_metric_value(metric_name, week_avg)
                     flag = " **SPIKE**" if pct > 20 else ""
                     resource_lines.append(
-                        f"  - {metric_name}: {y_str} (7-day avg: {w_str}, {pct:+.1f}%){flag}"
+                        f"  - {metric_name}: {y_str} (Baseline avg: {w_str}, {pct:+.1f}%){flag}"
                     )
                 else:
                     resource_lines.append(f"  - {metric_name}: {y_str}")
@@ -639,7 +705,7 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
     Each anomaly dict: {type: "daily"|"service", name, cost, avg, pct_change}
     """
     daily = data["daily_totals"]
-    avg = data["seven_day_avg"]
+    avg = data["baseline_avg"]
     anomalies = []        # structured
     anomaly_strs = []     # human-readable
 
@@ -657,12 +723,12 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
     if day_before:
         lines.append(f"**Day before ({day_before}):** ${day_before_total:.2f}")
         lines.append(f"**Day-over-day change:** {dod_change:+.2f} ({dod_pct:+.1f}%)")
-    lines.append(f"**7-day avg:** ${avg:.2f}")
+    lines.append(f"**Baseline avg:** ${avg:.2f}")
     lines.append("")
 
     # Daily totals table
     lines.append("### Daily Totals (last 7 days)")
-    lines.append("| Date       | Total ($) | Day-over-Day | vs 7-day Avg |")
+    lines.append("| Date       | Total ($) | Day-over-Day | vs Baseline Avg |")
     lines.append("|------------|-----------|--------------|--------------|")
 
     prev_total = None
@@ -681,11 +747,11 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
                 "type": "daily", "name": date, "cost": total,
                 "avg": avg, "pct_change": round(pct_avg, 1),
             })
-            anomaly_strs.append(f"{date}: Total ${total:.2f} exceeds 7-day avg ${avg:.2f} by {pct_avg:.1f}%")
+            anomaly_strs.append(f"{date}: Total ${total:.2f} exceeds Baseline avg ${avg:.2f} by {pct_avg:.1f}%")
         lines.append(f"| {date} | {total:.2f} | {dod_str} | {pct_avg:+.1f}% |{flag}")
         prev_total = total
 
-    # Top services — yesterday vs day-before + 7-day avg
+    # Top services — yesterday vs day-before + Baseline avg
     svc_costs = data["service_costs"]
     svc_avgs = data["service_avgs"]
 
@@ -697,7 +763,7 @@ def _format_cost_tables(data: dict, threshold: float) -> tuple[str, list[dict], 
     svc_yesterday.sort(key=lambda x: -x[1])
 
     lines.append(f"\n### Top Services — {latest} vs {day_before or 'N/A'}")
-    lines.append("| Service | Yesterday ($) | Day Before ($) | Day-over-Day | 7-day Avg ($) | vs Avg |")
+    lines.append("| Service | Yesterday ($) | Day Before ($) | Day-over-Day | Baseline Avg ($) | vs Avg |")
     lines.append("|---------|---------------|----------------|--------------|---------------|--------|")
 
     for svc, cost in svc_yesterday[:15]:
@@ -872,6 +938,17 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
     force=False (scheduled daily run):         only post if anomalies detected
     channel/thread_ts: if provided, post in that Slack thread with live status updates
     """
+    if not _cost_report_lock.acquire(blocking=False):
+        log.info("Cost report already running — skipping this invocation")
+        return
+    try:
+        _generate_and_post_inner(config, force=force, channel=channel, thread_ts=thread_ts)
+    finally:
+        _cost_report_lock.release()
+
+
+def _generate_and_post_inner(config, force: bool = True, channel: str | None = None, thread_ts: str | None = None):
+    """Inner implementation — always called under _cost_report_lock."""
     cr = config.cost_report
 
     # Live status updater — posts progress to Slack thread like oracle streaming
@@ -997,7 +1074,7 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         tables_md += "\n\n## Usage Type Breakdown — What Resource Types Are Driving the Spike\n"
         for svc, breakdown in usage_breakdowns.items():
             tables_md += f"\n### {svc}\n"
-            tables_md += "| Usage Type | Yesterday ($) | 7-day Avg ($) | $ Change | % Change |\n"
+            tables_md += "| Usage Type | Yesterday ($) | Baseline Avg ($) | $ Change | % Change |\n"
             tables_md += "|------------|---------------|---------------|----------|----------|\n"
             for item in breakdown:
                 flag = ""
@@ -1021,7 +1098,7 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         )
         for svc, ops in operation_breakdowns.items():
             tables_md += f"\n### {svc}\n"
-            tables_md += "| Operation | Yesterday ($) | 7-day Avg ($) | $ Change | % Change |\n"
+            tables_md += "| Operation | Yesterday ($) | Baseline Avg ($) | $ Change | % Change |\n"
             tables_md += "|-----------|---------------|---------------|----------|----------|\n"
             for item in ops:
                 flag = ""
@@ -1070,7 +1147,9 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         tables_md += f"**Today ({hourly['today_date']}): {status_label}**\n"
         tables_md += f"- Spend so far: ${hourly['today_total_so_far']:.2f} ({hourly['today_hours']} hours)\n"
         tables_md += f"- Hourly burn rate: ${hourly['hourly_rate_today']:.2f}/hr\n"
-        if not hourly["today_complete"]:
+        if hourly.get("note"):
+            tables_md += f"- _{hourly['note']}_\n"
+        elif not hourly["today_complete"] and hourly["today_projected"] is not None:
             tables_md += f"- **Projected full day: ${hourly['today_projected']:.2f}**\n"
         tables_md += f"\n**Yesterday ({hourly['yesterday_date']}): COMPLETE**\n"
         tables_md += f"- Total: ${hourly['yesterday_total']:.2f} ({hourly['yesterday_hours']} hours)\n"
@@ -1084,13 +1163,17 @@ def _generate_and_post(config, force: bool = True, channel: str | None = None, t
         tables_md += "|---------|------------------|---------------|---------------|------------|----------|\n"
         for sc in hourly["service_comparison"]:
             flag = ""
-            if sc["pct_change"] > 15:
-                flag = " <-- UP"
-            elif sc["pct_change"] < -15:
-                flag = " <-- DOWN"
+            proj_str = f"{sc['today_projected']:.2f}" if sc["today_projected"] is not None else "N/A"
+            diff_str = f"{sc['diff']:+.2f}" if sc["diff"] is not None else "N/A"
+            pct_str = f"{sc['pct_change']:+.1f}%" if sc["pct_change"] is not None else "N/A"
+            if sc["pct_change"] is not None:
+                if sc["pct_change"] > 15:
+                    flag = " <-- UP"
+                elif sc["pct_change"] < -15:
+                    flag = " <-- DOWN"
             tables_md += (
-                f"| {sc['service']} | {sc['today_so_far']:.2f} | {sc['today_projected']:.2f} "
-                f"| {sc['yesterday']:.2f} | {sc['diff']:+.2f} | {sc['pct_change']:+.1f}% |{flag}\n"
+                f"| {sc['service']} | {sc['today_so_far']:.2f} | {proj_str} "
+                f"| {sc['yesterday']:.2f} | {diff_str} | {pct_str} |{flag}\n"
             )
 
     # LLM analysis — use the latest COMPLETE day for title
@@ -1169,6 +1252,10 @@ def _trigger_cost_investigation(config, anomalies: list[dict], cost_context: str
     root cause. The cost report gives the 'what' — this gives the 'why' by using
     CloudTrail, kubectl, aws CLI, etc.
     """
+    if _investigation_running.is_set():
+        log.info("Cost investigation already running — skipping")
+        return
+
     # Build a focused investigation question from the anomalies
     svc_anomalies = [a for a in anomalies if a["type"] == "service"]
     if not svc_anomalies:
@@ -1201,6 +1288,7 @@ def _trigger_cost_investigation(config, anomalies: list[dict], cost_context: str
     )
 
     def _run():
+        _investigation_running.set()
         try:
             log.info(f"Auto-investigating critical cost anomaly: {svc_list}")
             llm = config.make_llm()
@@ -1241,5 +1329,7 @@ def _trigger_cost_investigation(config, anomalies: list[dict], cost_context: str
             log.info("Cost anomaly investigation completed and posted to Slack")
         except Exception:
             log.exception("Cost anomaly auto-investigation failed")
+        finally:
+            _investigation_running.clear()
 
     threading.Thread(target=_run, daemon=True, name="cost-investigation").start()

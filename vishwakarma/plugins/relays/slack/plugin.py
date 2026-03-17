@@ -12,6 +12,9 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# Module-level cache for channel name → ID resolution (process lifetime)
+_channel_id_cache: dict[str, str] = {}
+
 
 class SlackDestination:
 
@@ -33,11 +36,15 @@ class SlackDestination:
         if not channel or channel.startswith("C") or channel.startswith("D") or channel.startswith("G"):
             return channel
         name = channel.lstrip("#")
+        # Check module-level cache first
+        if name in _channel_id_cache:
+            return _channel_id_cache[name]
         try:
             client = self._get_client()
             for page in client.conversations_list(types="public_channel,private_channel", limit=1000):
                 for c in page.get("channels", []):
                     if c["name"] == name:
+                        _channel_id_cache[name] = c["id"]
                         return c["id"]
         except Exception as e:
             log.warning(f"Could not resolve channel '{channel}': {e}")

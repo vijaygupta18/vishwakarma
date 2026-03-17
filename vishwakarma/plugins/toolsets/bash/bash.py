@@ -13,6 +13,7 @@ The engine layer handles require_approval / bash_always_allow / bash_always_deny
 This toolset handles the configured allow/block lists.
 """
 import logging
+import re
 import shlex
 import subprocess
 from typing import Any
@@ -135,6 +136,13 @@ class BashToolset(Toolset):
                 invocation=f"bash({command})",
             )
 
+    # SQL/DB destructive patterns — blocked regardless of allow/block config
+    _DESTRUCTIVE_SQL_RE = re.compile(
+        r"\b(DROP\s+TABLE|DROP\s+DATABASE|DELETE\s+FROM|TRUNCATE\s+TABLE|ALTER\s+TABLE"
+        r"|FLUSHALL|FLUSHDB|SHUTDOWN\s+NOSAVE)\b",
+        re.IGNORECASE,
+    )
+
     def _is_allowed(self, command: str) -> tuple[bool, str]:
         """
         Apply local bash rules (safe_mode, allow, block).
@@ -148,13 +156,27 @@ class BashToolset(Toolset):
             if pattern in cmd:
                 return False, f"Blocked by hardcoded safety rule: {pattern}"
 
-        # Config block list
+        # Block destructive SQL/DB commands embedded in bash (psql -c "DROP TABLE", redis-cli FLUSHALL, etc.)
+        if self._DESTRUCTIVE_SQL_RE.search(cmd):
+            return False, "Blocked: destructive database operation detected (DROP/DELETE/TRUNCATE/FLUSH)"
+
+        # Config block list — split on ALL chaining operators: |, ;, &&, ||
+        parts = [p.strip() for p in re.split(r'[|;]|&&|\|\|', cmd)]
         for blocked in self.block:
-            # Match start of command or after pipe
-            parts = [p.strip() for p in cmd.replace("|", "\n").replace(";", "\n").split("\n")]
             for part in parts:
                 if part.startswith(blocked):
                     return False, f"Command blocked by config rule: {blocked}"
+
+        # Also check subshell content: $(...) and `...`
+        subshells = re.findall(r'\$\(([^)]+)\)|`([^`]+)`', cmd)
+        for groups in subshells:
+            for sub in groups:
+                if sub:
+                    for blocked in self.block:
+                        sub_parts = [p.strip() for p in re.split(r'[|;]|&&|\|\|', sub)]
+                        for part in sub_parts:
+                            if part.startswith(blocked):
+                                return False, f"Command blocked by config rule (in subshell): {blocked}"
 
         # Config allow list (takes priority over safe_mode)
         for allowed in self.allow:
