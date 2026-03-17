@@ -533,23 +533,14 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                             blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": chunk}}],
                         )
 
-                # Feedback buttons
-                if inc_id:
+                # Hint for saving learnings (small context block like oracle)
+                if analysis:
                     try:
+                        category = _infer_category(question, config=config, fact=analysis[:200])
                         client_sdk.chat_postMessage(
                             channel=channel, thread_ts=thread_ts,
-                            text="Was this RCA accurate?",
-                            blocks=[
-                                {"type": "section", "text": {"type": "mrkdwn", "text": "*Was this RCA accurate?*"}},
-                                {
-                                    "type": "actions",
-                                    "block_id": f"rca_feedback_{inc_id[:16]}",
-                                    "elements": [
-                                        {"type": "button", "text": {"type": "plain_text", "text": "✅ Correct", "emoji": True}, "style": "primary", "action_id": "vk_rca_correct", "value": inc_id},
-                                        {"type": "button", "text": {"type": "plain_text", "text": "❌ Wrong", "emoji": True}, "style": "danger", "action_id": "vk_rca_wrong", "value": inc_id},
-                                    ],
-                                },
-                            ],
+                            text=f"Save learning: @oogway learn {category} <your finding>",
+                            blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"_Save learning · `@oogway learn {category} <your finding>`_"}]}],
                         )
                     except Exception:
                         pass
@@ -968,6 +959,30 @@ def _extract_root_cause(analysis: str) -> str:
     # Fallback: first 500 chars stripped of markdown
     text = re.sub(r'#{1,6}\s*\S+.*\n?', '', analysis)
     return text.strip()[:500]
+
+
+def _extract_key_finding(analysis: str) -> str:
+    """Extract a one-line key finding from the analysis for the learn command."""
+    import re
+    # Try Root Cause section first
+    match = re.search(r'##\s*Root Cause\s*\n(.*?)(?=\n##|\Z)', analysis, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    else:
+        # Try Summary section
+        match = re.search(r'##\s*Summary\s*\n(.*?)(?=\n##|\Z)', analysis, re.DOTALL | re.IGNORECASE)
+        if match:
+            text = match.group(1).strip()
+        else:
+            text = analysis.strip()
+    # Clean markdown and take first sentence
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = re.sub(r'#{1,6}\s*', '', text)
+    text = re.sub(r'\n+', ' ', text).strip()
+    # First sentence
+    sentence = re.split(r'(?<=[.!?])\s', text)[0].strip()
+    return sentence[:200] if sentence else text[:200]
 
 
 def _infer_category(alert_name: str, config=None, fact: str = "") -> str:
