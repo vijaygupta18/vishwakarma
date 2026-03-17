@@ -497,16 +497,17 @@ def start_bot(config: "VishwakarmaConfig") -> None:
                     elif etype == "done":
                         analysis = event.get("content", "") or analysis or ""
 
-                        # Finalise status message
-                        tool_count = len(tool_lines)
-                        try:
-                            client_sdk.chat_update(
-                                channel=channel, ts=status_ts,
-                                text=f"🔍 {tool_count} tool calls completed",
-                                blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · done_"}]}],
-                            )
-                        except Exception:
-                            pass
+                # Finalize status message (handles both done and max_steps_reached)
+                tool_count = len(tool_lines)
+                try:
+                    label = "done (max steps)" if "maximum steps" in (analysis or "") else "done"
+                    client_sdk.chat_update(
+                        channel=channel, ts=status_ts,
+                        text=f"🔍 {tool_count} tool calls completed",
+                        blocks=[{"type": "context", "elements": [{"type": "mrkdwn", "text": f"🔍 _{tool_count} tool calls · {label}_"}]}],
+                    )
+                except Exception:
+                    pass
 
                 # Generate PDF
                 pdf_path = None

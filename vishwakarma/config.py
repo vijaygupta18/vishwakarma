@@ -76,7 +76,6 @@ SAFE_BASH_COMMANDS = [
     "du",
     "free",
     "uname",
-    "env",
     "printenv",
     "which",
     "dig",
@@ -103,6 +102,7 @@ HARDCODED_BLOCK = [
     "> /dev/sda",
     # Prevent code execution that can construct blocked commands at runtime
     "eval ",
+    "eval\t",
     "base64 -d",
     "base64 --decode",
     "python3 -c",
@@ -110,9 +110,13 @@ HARDCODED_BLOCK = [
     "perl -e",
     "ruby -e",
     "node -e",
+    "bash -c",
+    "sh -c",
+    "env ",
     "/dev/tcp",
     "/dev/udp",
     "nohup ",
+    "nohup\t",
     "crontab",
 ]
 

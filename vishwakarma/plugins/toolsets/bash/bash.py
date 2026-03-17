@@ -167,11 +167,16 @@ class BashToolset(Toolset):
                 if part.startswith(blocked):
                     return False, f"Command blocked by config rule: {blocked}"
 
-        # Also check subshell content: $(...) and `...`
-        subshells = re.findall(r'\$\(([^)]+)\)|`([^`]+)`', cmd)
-        for groups in subshells:
+        # Also check subshell/process-substitution content: $(...), `...`, <(...)
+        # Use a broad extraction that handles nesting by finding all parenthesized content
+        subshell_content = re.findall(r'\$\((.+?)\)|`([^`]+)`|<\((.+?)\)', cmd)
+        for groups in subshell_content:
             for sub in groups:
                 if sub:
+                    # Check HARDCODED_BLOCK against subshell content too
+                    for pattern in HARDCODED_BLOCK:
+                        if pattern in sub:
+                            return False, f"Blocked by hardcoded safety rule (in subshell): {pattern}"
                     for blocked in self.block:
                         sub_parts = [p.strip() for p in re.split(r'[|;]|&&|\|\|', sub)]
                         for part in sub_parts:
