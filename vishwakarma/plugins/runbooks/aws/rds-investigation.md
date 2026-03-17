@@ -4,7 +4,7 @@
 Investigate AWS RDS CPU/connection/memory alerts. Find:
 1. Which instance is affected and what metric is high
 2. Which query or operation is causing it (top SQL from Performance Insights)
-3. Whether there is business impact (5xx errors, ride-to-search ratio drop)
+3. Whether there is business impact (5xx errors, latency increase, key business metric degradation)
 
 **Agent Mandate:** Read-only. Do not modify any DB settings.
 
@@ -24,7 +24,7 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 ## IMPORTANT: Tool Routing
 - **RDS metrics (CPU, connections, IOPS, memory)**: Use `aws cloudwatch get-metric-statistics` via bash — NOT prometheus. RDS metrics are NOT in Prometheus.
-- **Business impact (5xx, latency, ride-to-search)**: Use `prometheus_query_range` — these ARE application metrics in Prometheus.
+- **Business impact (5xx, latency, business metrics)**: Use `prometheus_query_range` — these ARE application metrics in Prometheus.
 - **Application/DB logs**: Use `elasticsearch_search`
 - **Direct SQL diagnostics**: Use `db_query(bap_pg)` or `db_query(bpp_pg)` for pg_stat_activity
 
@@ -175,6 +175,7 @@ Look for:
 - High sequential scan count → missing index
 - Many waiting connections → lock contention or pool exhaustion
 - Single query consuming all active connections → kill candidate
+- High dead tuple count on large tables → autovacuum running or needed (check `n_dead_tup` in `pg_stat_user_tables`)
 
 **If PI fails** (IAM issues, empty response) → Method A (PI) results were not available, use Method B results.
 
@@ -194,8 +195,8 @@ Run all three simultaneously:
 - query: `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))`
 - start: `<startsAt - 10m>`, end: `<startsAt + 1h>`, step: `1m`
 
-**3c — Ride-to-search ratio (are riders getting matched?):**
-- query: use ride-created and search-request metrics from knowledge base
+**3c — Key business metrics (check Site Knowledge Base for deployment-specific metrics):**
+- query: use business-critical metrics from knowledge base (e.g., conversion rates, transaction counts)
 - start: `<startsAt - 30m>`, end: `<startsAt + 1h>`, step: `5m`
 
 **Fallback if Prometheus returns no data:**
@@ -222,6 +223,7 @@ timeout 30 stern -n <namespace> <service-name> --since 1h 2>/dev/null \
 Use `elasticsearch_search` tool with index from knowledge base:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "sort": [{"@timestamp": "desc"}],
   "query": {
@@ -266,7 +268,7 @@ Work through top-to-bottom. Stop at first match.
 **5. Replication lag high + WriteIOPS high on writer?**
 → **Heavy write load causing replica lag** — readers falling behind, reads hitting writer. Confidence: HIGH if lag > 30s.
 
-**6. CPU high + no 5xx + no ride-to-search drop?**
+**6. CPU high + no 5xx + no business metric degradation?**
 → **Background job or analytics query — lower urgency.** No immediate action needed. PI will show who is running it.
 
 **7. None match?** → Continue with Extended Investigation.

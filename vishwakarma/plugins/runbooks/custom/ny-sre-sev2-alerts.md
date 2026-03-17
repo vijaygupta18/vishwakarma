@@ -39,12 +39,13 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 4. Search the Istio access log index (from knowledge base) for 5xx HTTP responses in the last 30 minutes:
 ```json
 {
+  "index": "<access-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"log": "HTTP"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ],
       "should": [
         {"match": {"log": "\" 500 "}},
@@ -63,12 +64,13 @@ From results extract: which API path, which STATUS_CODE, which upstream service 
 5. Use request IDs from step 4 to find full error in the app log index (from knowledge base):
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 10,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "<request-id-uuid-from-step-4>"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -105,12 +107,13 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 4. Search the app log index (from knowledge base) for payment-related errors in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "payment"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -118,7 +121,7 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 }
 ```
 
-6. Determine: is the payment gateway returning 5xx (external outage) or are we sending bad requests (request format issue)?
+5. Determine: is the payment gateway returning 5xx (external outage) or are we sending bad requests (request format issue)?
    Look for HTTP response body in logs — a 5xx with the gateway's error message = external issue.
 
 **Possible root causes:** Payment gateway outage, expired API credentials, bad request format after code change.
@@ -139,11 +142,12 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 4. Search the app log index (from knowledge base) for external gateway errors in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "registry"}},
@@ -205,7 +209,7 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
 2. Grep allocator logs:
    `timeout 30 stern -n <namespace> <allocator-name-from-grep> --since 30m | grep -iE "error|exception|redis|db|timeout|refused|panic|dead" | head -200`
 
-4. Check location-tracking Redis (allocator depends heavily on driver location data). Use cluster ID from knowledge base:
+3. Check location-tracking Redis (allocator depends heavily on driver location data). Use cluster ID from knowledge base:
    ```
    aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization \
      --dimensions Name=ReplicationGroupId,Value=<location-redis-cluster-id> \
@@ -221,7 +225,7 @@ Look in `message` field (JSON) → `log` key for exception type, Redis timeout, 
      --period 60 --statistics Sum --region <region>
    ```
 
-5. Check pod OOM/crash: `kubectl describe pod -n <namespace> <pod-name> | grep -A5 "Last State\|OOMKilled"`
+4. Check pod OOM/crash: `kubectl describe pod -n <namespace> <pod-name> | grep -A5 "Last State\|OOMKilled"`
 
 **Possible root causes:** Allocator crashed/OOM, location-tracking Redis unavailable, DB overload, bad deployment.
 
@@ -279,9 +283,9 @@ done
 ```
 For writer instances, also run Performance Insights:
 ```
-aws pi describe-dimension-keys --service-type RDS --identifier db:<writer-instance-dbi-resource-id> \
+aws pi describe-dimension-keys --service-type RDS --identifier <DbiResourceId-from-knowledge-base> \
   --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
+  --metric db.load.avg --group-by '{"Group":"db.sql_tokenized","Limit":5}' --region <region>
 ```
 Report: instance name, CPU%, connection count, top queries from Performance Insights.
 

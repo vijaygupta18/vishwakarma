@@ -43,11 +43,12 @@ timeout 30 stern -n <namespace> <pt-backend-service> --since 30m 2>/dev/null | g
 Search the app log index (from knowledge base) for the alert window:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-1h"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "CMRL"}},
@@ -102,11 +103,12 @@ timeout 30 stern -n <namespace> <grpc-pod> --since 15m 2>/dev/null | grep -iE "e
 Search the app log index (from knowledge base) for the alert window:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "grpc"}},
@@ -161,11 +163,12 @@ kubectl top pods -n <gims-namespace> | grep -iE "gtfs|gims"
 Search the app log index (from knowledge base) for the alert window:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-30m"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "gtfs"}},
@@ -196,11 +199,12 @@ Fires when refund rate increases above threshold — indicates payment failures 
 Search the app log index (from knowledge base) for payment/refund errors:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-1h"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "refund"}},

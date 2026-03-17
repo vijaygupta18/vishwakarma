@@ -26,17 +26,17 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 
 **Step 1a — Target 5xx count:**
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Sum --region <region>
 ```
 
 **Step 1b — ELB-generated 5xx (502/503/504 from ALB itself):**
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_ELB_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_ELB_5XX_Count --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Sum --region <region>
 ```
 
 **Step 2 — Response latency (run at same time as Step 1):**
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name TargetResponseTime --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average p99 --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name TargetResponseTime --dimensions Name=LoadBalancer,Value=<alb-arn-suffix-from-knowledge-base> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Average --extended-statistics p99 --region <region>
 ```
 - High latency (> 5s) + 5xx = timeout (504). Instant 5xx = application crash (500/502).
 
@@ -47,11 +47,11 @@ aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-nam
 ```
 If the 5xx rate today matches the 7-day average → this is baseline noise, not a real incident. State this in your RCA.
 
-### Step 3: Find Failing APIs from Istio Access Logs
-Search the Istio access log index (see knowledge base for exact index name) for 5xx HTTP responses in the last 30 minutes.
+### Step 3: Find Failing APIs from Access Logs
+Search the access log index (see knowledge base for exact index name) for 5xx HTTP responses during the alert window.
 
 Use the Elasticsearch tool to search:
-- Index: use the Istio access log index name from the knowledge base (typically date-suffixed)
+- Index: use the access log index name from the knowledge base (typically date-suffixed)
 - Query: search `log` field for the pattern `HTTP/1.1" 5` to find 5xx responses
 - The log line format: `[timestamp] "METHOD /path HTTP/1.1" STATUS_CODE ...`
 - Extract: which `/path` (API endpoint), which STATUS_CODE (500/502/503/504), which `outbound|...|service.namespace` (upstream service)
@@ -60,12 +60,13 @@ Use the Elasticsearch tool to search:
 Example search query:
 ```json
 {
+  "index": "<access-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"log": "HTTP"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ],
       "should": [
         {"match": {"log": "\" 500 "}},
@@ -91,12 +92,13 @@ Use the request IDs found in Step 3 to find the full error in the application lo
 Search for each request ID:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 10,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "<request-id-from-step-3>"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -107,13 +109,14 @@ Search for each request ID:
 Also search for ERROR-level logs from the identified service:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "ERROR"}},
         {"match": {"message": "<service-name-from-step-3>"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -145,19 +148,19 @@ Check recent deployments:
 ### If error message shows Redis errors (timeout, connection refused, CLUSTERDOWN, MOVED)
 Redis is the root cause. Check all Redis clusters from the knowledge base — run for each:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Sum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Average Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Average --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections --dimensions Name=ReplicationGroupId,Value=<cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Maximum --region <region>
 ```
 Report: CPU%, memory%, evictions, connections for each cluster.
 
 ### If error message shows DB errors (connection refused, too many connections, query timeout, deadlock)
 RDS is the root cause. Use the service→RDS mapping from the knowledge base to identify which instances to check.
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=<instance-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Average Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=<instance-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --period 60 --statistics Maximum --region <region>
-aws pi describe-dimension-keys --service-type RDS --identifier db:<instance-id> --start-time <30min ago ISO8601> --end-time <now ISO8601> --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization --dimensions Name=DBInstanceIdentifier,Value=<instance-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Average Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections --dimensions Name=DBInstanceIdentifier,Value=<instance-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 60 --statistics Maximum --region <region>
+aws pi describe-dimension-keys --service-type RDS --identifier <DbiResourceId-from-knowledge-base> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --metric db.load.avg --group-by '{"Group":"db.sql_tokenized","Limit":5}' --region <region>
 ```
 
 ### If high TargetResponseTime (> 5s) + 504 → downstream timeout. Report which dependency is slow.

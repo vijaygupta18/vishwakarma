@@ -38,16 +38,17 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 3. Grep logs across all auth service pods using stern (with head limit to avoid hanging):
    `timeout 30 stern -n <namespace> <app-backend-service> --since 30m | grep -iE "auth|verify|error|exception|redis|db|timeout|refused" | head -200`
 
-5. Search the app log index (from knowledge base) for errors on the auth endpoint in the last 30 minutes:
+4. Search the app log index (from knowledge base) for errors on the auth endpoint in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "verify"}},
         {"match": {"message": "ERROR"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -55,15 +56,15 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 }
 ```
 
-6. Check if it's a Redis issue (auth sessions/OTPs cached in Redis):
+5. Check if it's a Redis issue (auth sessions/OTPs cached in Redis):
    Look in logs for "redis", "timeout", "connection refused", "CLUSTERDOWN".
    If found → immediately run Redis pivot steps (see Synthesize section below).
 
-7. Check if it's a DB issue:
+6. Check if it's a DB issue:
    Look in logs for "DB", "connection refused", "too many connections", "query timeout".
    If found → immediately run RDS pivot steps (see Synthesize section below).
 
-8. Check recent deployments:
+7. Check recent deployments:
    `kubectl get events -n <namespace> --sort-by='.lastTimestamp' | grep -iE "pulled|deploy|image" | tail -10`
 
 **Possible root causes:** DB connectivity issue, Redis down, OTP provider outage, bad deployment, pod crash loop.
@@ -83,13 +84,14 @@ Refer to the **Site Knowledge Base** for your cluster's specific values:
 3. Search the app log index (from knowledge base) for producer errors in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "producer"}},
         {"match": {"message": "ERROR"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -215,12 +217,13 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 4. Search the app log index (from knowledge base) for config parse errors in the last 15 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "system_configs_failed"}},
-        {"range": {"@timestamp": {"gte": "now-15m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -250,13 +253,14 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 4. Search the app log index (from knowledge base) for the job failure in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "<job-name-from-step-1>"}},
         {"match": {"message": "ERROR"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -286,12 +290,13 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 4. Search the app log index (from knowledge base) for 5xx responses on multimodal handlers in the last 30 minutes:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
         {"match": {"message": "multimodal"}},
-        {"range": {"@timestamp": {"gte": "now-30m"}}}
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}}
       ]
     }
   },
@@ -299,7 +304,7 @@ The drainer processes a queue of DB writes. A single bad record with a fatal SQL
 }
 ```
 
-6. If logs show Redis errors → run Redis pivot (see Synthesize section).
+5. If logs show Redis errors → run Redis pivot (see Synthesize section).
    If logs show DB errors → run RDS pivot (see Synthesize section).
 
 **Possible root causes:** External multimodal API outage, timeout from provider, bad request format, rate limit.
@@ -358,9 +363,9 @@ done
 ```
 For writer instances, also run Performance Insights:
 ```
-aws pi describe-dimension-keys --service-type RDS --identifier db:<writer-instance-dbi-resource-id> \
+aws pi describe-dimension-keys --service-type RDS --identifier <DbiResourceId-from-knowledge-base> \
   --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> \
-  --metric db.load.avg --group-by '{"Group":"db.sql","Limit":5}' --region <region>
+  --metric db.load.avg --group-by '{"Group":"db.sql_tokenized","Limit":5}' --region <region>
 ```
 Report: RDS CPU%, connection count, top queries.
 

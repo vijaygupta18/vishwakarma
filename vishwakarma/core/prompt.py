@@ -118,10 +118,10 @@ HIGH / MEDIUM / LOW — <reason for confidence level>
 3. <impact observed>
 
 ## Business Impact
-- **User impact:** <yes/no — ride creation, 5xx rate, latency>
+- **User impact:** <yes/no — describe affected user operations, 5xx rate, latency>
 - **5xx rate:** <baseline> → <peak> at <timestamp>
 - **P99 latency:** <baseline> → <peak> for <service>
-- **Ride-to-search ratio:** <stable / dropped by X%>
+- **Key business metrics:** <stable / changed — use metrics from Site Knowledge Base>
 
 ## Immediate Fix
 <exact command or action to resolve right now, or "No action needed — self-resolved" if already cleared>
@@ -173,6 +173,7 @@ GENERAL_GUIDELINES = """\
 **Tool routing (use the dedicated tool, not http_get):**
 - Metrics/PromQL → `prometheus_query` or `prometheus_query_range` (NEVER `http_get`)
 - Log search → `elasticsearch_search` or `loki_query` (NEVER `http_get`)
+- Database queries → `db_query` if database toolset is enabled (read `learnings_read(database)` first)
 - K8s/AWS/system commands → `bash` tool
 - External URLs only → `http_get`
 
@@ -202,7 +203,7 @@ Keep asking "why" until you reach the actual cause. High CPU is a symptom. "auto
 
 ASK_USER_PROMPT = """\
 **ALWAYS investigate immediately. Never ask for clarification.**
-Extract whatever context is available (ride IDs, booking data, error messages, service names, time hints) and start investigating with tools NOW.
+Extract whatever context is available (entity IDs, transaction data, error messages, service names, time hints) and start investigating with tools NOW.
 If the user pastes a Slack thread, DB query results, or raw JSON — treat it as investigation context and use the data directly.
 Only ask a question if you have literally zero information to work with (e.g. empty message).
 """

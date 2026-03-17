@@ -2,7 +2,7 @@
 
 ## Goal
 - **Primary Objective:** Investigate Redis/ElastiCache alerts — high CPU, high memory, evictions, high connections, or replication lag.
-- **Scope:** AWS ElastiCache Redis clusters for SRE Platform in <region>. Used for session caching, driver location data, ride state, and KV store.
+- **Scope:** AWS ElastiCache Redis clusters in <region>. Used for session caching, location data, state management, and KV store.
 - **Agent Mandate:** Read-only. Do not flush, delete keys, or modify any Redis configuration. Provide RCA with possible root causes for the team to act on.
 - **Expected Outcome:** Identify what is stressing Redis, which service/key pattern is responsible, and what the team should do.
 
@@ -33,8 +33,10 @@ aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name D
 - **Current value normal, startsAt < 30 min ago** → RESOLVED, transient — lighter investigation
 - **Current value normal, startsAt > 2 hours ago** → STALE — note and move on
 
-### Step 1: List ALL Clusters and Find the Alerting One
-First, get all ElastiCache replication groups in the account:
+### Step 1: Identify the Alerting Cluster
+**If the alert specifies a replication group ID or cluster ID**, skip the enumerate step and go directly to Step 2 using that cluster ID.
+
+**If the alert does NOT specify a cluster ID**, list all clusters to find the affected one:
 ```
 aws elasticache describe-replication-groups --region <region> --query 'ReplicationGroups[*].[ReplicationGroupId,Status,NodeGroups[0].PrimaryEndpoint.Address]' --output table
 ```
@@ -49,15 +51,15 @@ If an alarm is firing, identify which cluster it's for:
 aws cloudwatch describe-alarms --state-value ALARM --region <region> --query 'MetricAlarms[*].[AlarmName,Dimensions,StateReason]' --output table
 ```
 
-Note ALL replication group IDs from Step 1 — you will check CPU on all of them in Step 2.
+Note the replication group IDs — you will check CPU on all of them in Step 2.
 
 ### Step 2: Check CPU on ALL Clusters (Find Which One is High)
-For **each replication group** returned in Step 1, run:
+For **each replication group** (or just the alerting one if known from Step 1), run:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=<replication-group-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name EngineCPUUtilization --dimensions Name=ReplicationGroupId,Value=<replication-group-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Average Maximum --region <region>
 ```
 
-Run this for every cluster. Identify which clusters have high CPU (> 50%) or other anomalies. Focus the rest of the investigation on those.
+Identify which clusters have high CPU (> 50%) or other anomalies. Focus the rest of the investigation on those.
 
 **7-day baseline adversarial check (run in parallel with CPU checks):**
 To distinguish a real incident from a recurring daily pattern (e.g. batch jobs, daily spikes):
@@ -66,15 +68,15 @@ aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name E
 ```
 If today's CPU spike matches the 7-day pattern → recurring baseline, not a new incident. State this in your RCA.
 
-### Step 3: Check All Key Metrics on the Affected Cluster(s)
+### Step 3: Check All Key Metrics + Eviction Policy on the Affected Cluster(s)
 For each affected cluster found in Step 2:
 ```
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Average --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Sum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name NewConnections --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Maximum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CacheHits --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Sum --region <region>
-aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CacheMisses --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <1h ago ISO8601> --end-time <now ISO8601> --period 300 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name DatabaseMemoryUsagePercentage --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Average --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name Evictions --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CurrConnections --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name NewConnections --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Maximum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CacheHits --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Sum --region <region>
+aws cloudwatch get-metric-statistics --namespace AWS/ElastiCache --metric-name CacheMisses --dimensions Name=ReplicationGroupId,Value=<affected-cluster-id> --start-time <startsAt-10min ISO8601> --end-time <startsAt+1h ISO8601> --period 300 --statistics Sum --region <region>
 ```
 
 Interpret:
@@ -85,30 +87,50 @@ Interpret:
 - `NewConnections` — connection creation rate (spike = connection storm)
 - `CacheHits` / `CacheMisses` — hit ratio = Hits / (Hits + Misses); low ratio = evictions hurting cache
 
-### Step 3: Check Eviction Policy
-`aws elasticache describe-cache-parameter-groups --region <region>`
-
+**Also check eviction policy:**
+```
+aws elasticache describe-cache-parameter-groups --region <region>
+```
 Find the parameter group used by the alerting cluster, then:
-`aws elasticache describe-cache-parameters --cache-parameter-group-name <param-group-name> --region <region> | grep -iE "maxmemory|eviction"`
-
+```
+aws elasticache describe-cache-parameters --cache-parameter-group-name <param-group-name> --region <region> | grep -iE "maxmemory|eviction"
+```
 If evictions > 0: Redis is full. Cache misses will increase, forcing more DB reads → cascading RDS CPU spike.
 
-### Step 4: Correlate with Application Pods
+### Step 4: Check Business Impact (Run in Parallel)
+**Use `prometheus_query_range` tool for all PromQL. Do NOT use http_get.**
+
+Run simultaneously:
+
+**4a — 5xx error rate:**
+- query: `sum by(service,handler)(rate(http_request_duration_seconds_count{handler!="/v1/",status_code=~"^5.."}[1m]))`
+- start: `<startsAt - 10m>`, end: `<startsAt + 1h>`, step: `1m`
+
+**4b — P99 latency:**
+- query: `histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service))`
+- start: `<startsAt - 10m>`, end: `<startsAt + 1h>`, step: `1m`
+
+**4c — Key business metrics (check Site Knowledge Base for deployment-specific metrics):**
+- query: use business-critical metrics from knowledge base (e.g., conversion rates, transaction counts)
+- start: `<startsAt - 30m>`, end: `<startsAt + 1h>`, step: `5m`
+
+### Step 5: Correlate with Application Pods
 Find all pods that use Redis across all namespaces:
 `kubectl get pods -A | grep -iE "<your-app-services>"` (use service names from the knowledge base)
 
 Grep their logs for Redis errors during the spike (use service names from the knowledge base):
 `timeout 30 stern -n <namespace> <service-name> --since 1h | grep -iE "redis|cache|timeout|refused|clusterdown|moved|evict|conn" | head -200`
 
-### Step 5: Search Elasticsearch for Redis Errors
-Search the app log index (see knowledge base for index name) for Redis errors in the last hour:
+### Step 6: Search Elasticsearch for Redis Errors
+Search the app log index (see knowledge base for index name) for Redis errors during the alert window:
 ```json
 {
+  "index": "<app-log-index-from-knowledge-base>",
   "size": 20,
   "query": {
     "bool": {
       "must": [
-        {"range": {"@timestamp": {"gte": "now-1h"}}},
+        {"range": {"@timestamp": {"gte": "<startsAt-10min ISO8601>", "lte": "<startsAt+1h ISO8601>"}}},
         {"bool": {
           "should": [
             {"match": {"message": "redis"}},
@@ -128,13 +150,13 @@ Search the app log index (see knowledge base for index name) for Redis errors in
 ```
 Look inside the `message` field (it's JSON) for the `log` key which has the actual error text. Correlate error timestamps with the CloudWatch metric spikes from Step 2.
 
-### Step 6: Check for Connection Storm
+### Step 7: Check for Connection Storm
 High `CurrConnections` or `NewConnections` spike:
 - Check if HPA scaled up a service recently (more pods = more Redis connections):
   `kubectl get events -A --sort-by='.lastTimestamp' | grep -iE "scaled|replica|hpa" | tail -20`
 - Check HPA status: `kubectl get hpa -A`
 
-### Step 7: Check for Expensive Commands
+### Step 8: Check for Expensive Commands
 If Redis CPU is high, look for `KEYS *`, `SMEMBERS` on large sets, `SORT`, `LRANGE` on large lists:
 `timeout 30 stern -n <namespace> <service-name> --since 1h | grep -iE "KEYS|SMEMBERS|LRANGE|SORT|SCAN" | head -50`
 
@@ -168,4 +190,3 @@ If you have followed all the steps above and still cannot determine the root cau
 - Use kubectl to inspect pod resource usage, node pressure, or scheduling issues
 
 The goal is to find the root cause — the runbook covers the most likely scenarios but real incidents can be unexpected. Trust your investigation instincts and follow the evidence.
-
