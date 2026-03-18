@@ -12,9 +12,11 @@ Endpoints:
   GET  /healthz              — liveness probe
   GET  /readyz               — readiness probe (toolset health)
 """
+import asyncio
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
@@ -117,7 +119,7 @@ def create_app(config=None) -> FastAPI:
 
     @app.post("/api/investigate")
     async def investigate(request: InvestigateRequest):
-        """Main investigation endpoint — synchronous."""
+        """Main investigation endpoint — runs in thread to avoid blocking event loop."""
         tm = _state.get("toolset_manager")
         if not tm:
             raise HTTPException(503, "Server not ready")
@@ -125,8 +127,8 @@ def create_app(config=None) -> FastAPI:
         llm = config.make_llm()
         engine = config.make_engine(llm=llm, toolset_manager=tm)
 
-        try:
-            result = engine.investigate(
+        def _run():
+            return engine.investigate(
                 question=request.question,
                 history=request.history,
                 extra_system_prompt=request.extra_system_prompt,
@@ -140,6 +142,9 @@ def create_app(config=None) -> FastAPI:
                 sections_off=request.prompt_overrides,
                 response_schema=request.response_schema,
             )
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(None, _run)
         except Exception as e:
             log.error(f"Investigation failed: {e}", exc_info=True)
             raise HTTPException(500, str(e))
@@ -156,7 +161,11 @@ def create_app(config=None) -> FastAPI:
 
     @app.post("/api/investigate/stream")
     async def investigate_stream(request: InvestigateRequest):
-        """Streaming investigation endpoint — returns SSE."""
+        """Streaming investigation endpoint — returns SSE.
+
+        Runs the blocking generator in a thread and bridges events to the
+        async world via a queue so the event loop stays unblocked.
+        """
         tm = _state.get("toolset_manager")
         if not tm:
             raise HTTPException(503, "Server not ready")
@@ -164,7 +173,10 @@ def create_app(config=None) -> FastAPI:
         llm = config.make_llm()
         engine = config.make_engine(llm=llm, toolset_manager=tm)
 
-        async def event_stream() -> AsyncGenerator[str, None]:
+        _SENTINEL = object()
+        q: queue.Queue = queue.Queue()
+
+        def _produce():
             try:
                 for event in engine.stream_investigate(
                     question=request.question,
@@ -177,11 +189,26 @@ def create_app(config=None) -> FastAPI:
                     bash_always_allow=request.bash_always_allow,
                     bash_always_deny=request.bash_always_deny,
                 ):
-                    yield sse_event(event.get("type", "event"), event)
-                yield sse_done()
+                    q.put(event)
             except Exception as e:
-                log.error(f"Stream investigation error: {e}", exc_info=True)
-                yield sse_event("error", {"message": str(e)})
+                q.put(e)
+            finally:
+                q.put(_SENTINEL)
+
+        threading.Thread(target=_produce, daemon=True).start()
+
+        async def event_stream() -> AsyncGenerator[str, None]:
+            loop = asyncio.get_event_loop()
+            while True:
+                item = await loop.run_in_executor(None, q.get)
+                if item is _SENTINEL:
+                    break
+                if isinstance(item, Exception):
+                    log.error(f"Stream investigation error: {item}", exc_info=True)
+                    yield sse_event("error", {"message": str(item)})
+                    break
+                yield sse_event(item.get("type", "event"), item)
+            yield sse_done()
 
         return StreamingResponse(
             event_stream(),

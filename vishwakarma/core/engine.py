@@ -121,6 +121,7 @@ class InvestigationEngine:
         )
 
         tools = self.executor.openai_tools()
+        _MAX_LLM_RETRIES = 3
 
         for step in range(self.max_steps):
             log.debug(f"Investigation step {step + 1}/{self.max_steps}")
@@ -147,12 +148,21 @@ class InvestigationEngine:
                 compactions += 1
                 guard.reset()  # Allow retries after compaction — history is gone
 
-            # Call LLM
-            response = self.llm.complete(
-                messages=messages,
-                tools=tools if tools else None,
-                response_format=response_schema,
-            )
+            # Call LLM with retry — retries do NOT consume step budget
+            response = None
+            for _attempt in range(_MAX_LLM_RETRIES):
+                try:
+                    response = self.llm.complete(
+                        messages=messages,
+                        tools=tools if tools else None,
+                        response_format=response_schema,
+                    )
+                    break  # success
+                except Exception as llm_err:
+                    log.warning("LLM call error on step %d (attempt %d/%d): %s",
+                                step, _attempt + 1, _MAX_LLM_RETRIES, llm_err)
+                    if _attempt + 1 >= _MAX_LLM_RETRIES:
+                        raise  # give up after 3 consecutive failures
 
             # Log intermediate AI reasoning text (mirrors Holmes "AI: ..." output)
             if response.content and response.content.strip():
@@ -382,6 +392,7 @@ class InvestigationEngine:
         )
 
         tools = self.executor.openai_tools()
+        _MAX_LLM_RETRIES = 3
 
         checkpoint_injected_stream = False
 
@@ -408,19 +419,33 @@ class InvestigationEngine:
                 guard.reset()  # Allow retries after compaction — history is gone
                 yield {"type": "compaction", "step": step}
 
-            # Stream from LLM
+            # Stream from LLM with retry — retries do NOT consume step budget
             collected_content = ""
             collected_tool_calls = []
+            llm_ok = False
+            for _attempt in range(_MAX_LLM_RETRIES):
+                collected_content = ""
+                collected_tool_calls = []
+                try:
+                    for chunk in self.llm.stream(messages, tools=tools or None):
+                        chunk_type = chunk.get("type")
+                        yield chunk
 
-            for chunk in self.llm.stream(messages, tools=tools or None):
-                chunk_type = chunk.get("type")
-                yield chunk
+                        if chunk_type == "text_delta":
+                            collected_content += chunk.get("content", "")
+                        elif chunk_type in ("tool_calls", "analysis_done"):
+                            collected_content = chunk.get("content", collected_content)
+                            collected_tool_calls = chunk.get("tool_calls", [])
+                    llm_ok = True
+                    break  # success
+                except Exception as llm_err:
+                    log.warning("LLM stream error on step %d (attempt %d/%d): %s",
+                                step, _attempt + 1, _MAX_LLM_RETRIES, llm_err)
+                    yield {"type": "status", "message": f"LLM error (attempt {_attempt + 1}/{_MAX_LLM_RETRIES}): {type(llm_err).__name__}"}
 
-                if chunk_type == "text_delta":
-                    collected_content += chunk.get("content", "")
-                elif chunk_type in ("tool_calls", "analysis_done"):
-                    collected_content = chunk.get("content", collected_content)
-                    collected_tool_calls = chunk.get("tool_calls", [])
+            if not llm_ok:
+                yield {"type": "done", "content": f"Investigation failed after {_MAX_LLM_RETRIES} LLM retries: {llm_err}", "messages": messages}
+                return
 
             if not collected_tool_calls:
                 # Append only the assistant message — user message is already in messages
@@ -428,6 +453,20 @@ class InvestigationEngine:
                 messages.append({"role": "assistant", "content": collected_content})
                 yield {"type": "done", "content": collected_content, "messages": messages}
                 return
+
+            # Sanitise tool call arguments — the LLM may truncate JSON if it
+            # hits max_output_tokens mid-tool-call.  LiteLLM's Gemini fallback
+            # will crash if invalid JSON is stored in conversation history.
+            for tc in collected_tool_calls:
+                raw_args = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    json.loads(raw_args)  # validate
+                except Exception:
+                    log.warning(
+                        "Truncated tool-call arguments for %s — replacing with {}",
+                        tc.get("function", {}).get("name", "?"),
+                    )
+                    tc["function"]["arguments"] = "{}"
 
             # Add assistant turn
             messages.append({
