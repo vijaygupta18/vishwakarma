@@ -21,7 +21,7 @@ import logging
 import time
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, Callable
 
 from vishwakarma.core.compaction import compact_messages
 from vishwakarma.core.llm import VishwakarmaLLM
@@ -79,10 +79,14 @@ class InvestigationEngine:
         bash_always_deny: bool = False,
         sections_off: set[Section] | None = None,
         response_schema: dict | None = None,
+        on_progress: Callable[[dict], None] | None = None,
     ) -> LLMResult:
         """
         Run a full investigation and return the result.
         Synchronous — blocks until complete.
+
+        on_progress: optional callback fired at investigation milestones.
+          Events: step_start, tool_calls, compaction, checkpoint, hypothesis, complete.
         """
         start_time = time.time()
         guard = LoopGuard()
@@ -123,12 +127,22 @@ class InvestigationEngine:
         tools = self.executor.openai_tools()
         _MAX_LLM_RETRIES = 3
 
+        def _emit(event: dict) -> None:
+            """Fire progress callback safely — never let it kill the investigation."""
+            if on_progress:
+                try:
+                    on_progress(event)
+                except Exception as e:
+                    log.debug(f"Progress callback error (non-fatal): {e}")
+
         for step in range(self.max_steps):
             log.debug(f"Investigation step {step + 1}/{self.max_steps}")
+            _emit({"type": "step_start", "step": step + 1, "max_steps": self.max_steps})
 
             # Checkpoint: at step 20, force the LLM to decide RCA-or-continue
             if step == CHECKPOINT_STEP and not checkpoint_injected:
                 checkpoint_injected = True
+                _emit({"type": "checkpoint", "step": step + 1})
                 messages.append({
                     "role": "user",
                     "content": (
@@ -147,6 +161,7 @@ class InvestigationEngine:
             if did_compact:
                 compactions += 1
                 guard.reset()  # Allow retries after compaction — history is gone
+                _emit({"type": "compaction", "step": step + 1, "compactions": compactions})
 
             # Call LLM with retry — retries do NOT consume step budget
             response = None
@@ -167,9 +182,11 @@ class InvestigationEngine:
             # Log intermediate AI reasoning text (mirrors Holmes "AI: ..." output)
             if response.content and response.content.strip():
                 log.info(f"[bold #00FFFF]AI:[/bold #00FFFF] {response.content}")
+                _emit({"type": "hypothesis", "step": step + 1, "content": response.content[:200]})
 
             # No tool calls → LLM is done
             if not response.tool_calls:
+                _emit({"type": "complete", "step": step + 1})
                 meta = self.llm.build_meta(step + 1, compactions, start_time)
                 return LLMResult(
                     answer=response.content,
@@ -199,6 +216,8 @@ class InvestigationEngine:
             # Log tool call summary (mirrors Holmes-style progress output)
             n_calls = len(response.tool_calls)
             log.info(f"The AI requested {n_calls} tool call(s).")
+            tool_names = [tc["name"] for tc in response.tool_calls]
+            _emit({"type": "tool_calls", "step": step + 1, "tools": tool_names, "count": n_calls})
 
             # Pre-check all tool calls (guards + approvals) then execute in parallel
             to_execute: list[tuple[str, str, dict]] = []  # (call_id, tool_name, params)

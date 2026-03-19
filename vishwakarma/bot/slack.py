@@ -385,30 +385,86 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             threading.Thread(target=run_oracle, daemon=True).start()
             return
 
-        # debug <question> → full investigation + PDF
-        # anything else → simple LLM chat (no tools)
+        # ── Determine: investigate or chat? ──
+        # 1. "debug X" → always investigate, no questions asked
+        # 2. Thread reply → fetch thread context, use it to decide + enrich
+        # 3. Auto-detect from keywords/patterns
+        is_thread_reply = thread_ts and event.get("ts") != thread_ts
+        thread_context = ""
+        thread_text = ""
+
+        # Fetch thread context if we're in a thread
+        if is_thread_reply and client:
+            try:
+                thread_msgs = client.conversations_replies(
+                    channel=channel, ts=thread_ts, limit=30
+                )
+                messages_list = thread_msgs.get("messages", [])
+                thread_text = "\n".join(m.get("text", "")[:500] for m in messages_list)
+                # Also grab alarm context from parent message (CloudWatch alarms)
+                thread_context = _fetch_thread_alarm_context(client, channel, thread_ts)
+            except Exception as e:
+                log.debug(f"Thread fetch failed (non-fatal): {e}")
+
+        # Route: debug prefix = direct investigate
         is_investigation = question_lower.startswith("debug ")
         if is_investigation:
-            question = question[len("debug "):].strip()  # strip "debug " prefix
+            question = question[len("debug "):].strip()
+        else:
+            # Auto-detect investigation intent
+            is_investigation = _is_investigation_intent(question)
+            # In a thread with investigation context: many messages that look like
+            # investigation keywords ("redis", "root cause") are actually questions
+            # ABOUT the existing investigation, not new investigation requests.
+            # Downgrade to chat if the message is short and asking about thread content.
+            if is_investigation and is_thread_reply and thread_text:
+                has_investigation = any(
+                    kw in thread_text.lower()
+                    for kw in ["fast rca", "root cause", "investigation", "confidence",
+                               "evidence", "deep investigation", "investigation started"]
+                )
+                if has_investigation:
+                    # Thread already has an investigation. Only trigger a NEW investigation
+                    # if the user is clearly requesting one (action verbs + new scope).
+                    action_verbs = ["check", "investigate", "look into", "find out",
+                                    "debug", "diagnose", "troubleshoot", "run", "also check"]
+                    # Urgency signals = new issue being reported, not a question about existing
+                    urgency_signals = ["now", "just started", "just happened", "happening now",
+                                       "currently", "right now", "again", "new"]
+                    has_action = any(v in question.lower() for v in action_verbs)
+                    has_urgency = any(s in question.lower() for s in urgency_signals)
+                    if not has_action and not has_urgency:
+                        # No action verb → user is asking about the existing investigation
+                        is_investigation = False
 
-            # If the user replied in a thread, try to fetch the thread's parent message.
-            # Amazon Q posts CloudWatch alarms as thread starters — grab the alarm context.
-            thread_context = ""
-            if client and thread_ts and event.get("ts") != thread_ts:
-                thread_context = _fetch_thread_alarm_context(client, channel, thread_ts)
-
-            # Build investigation question: user question + alarm context if found
+        if is_investigation:
+            # Build investigation question with thread context
             if thread_context:
                 full_question = f"{question}\n\n{thread_context}"
+            elif thread_text and is_thread_reply:
+                # Use thread text as context even if no alarm format detected
+                full_question = f"{question}\n\n## Thread Context\n{thread_text[:3000]}"
             else:
                 full_question = question
 
+            # If no thread context and question references past issues,
+            # search incident DB and attach prior investigation as context
+            if not thread_context and not (thread_text and is_thread_reply):
+                prior_ctx = _find_prior_investigation(question)
+                if prior_ctx:
+                    full_question = f"{question}\n\n{prior_ctx}"
+
             say(text=f":mag: Investigating: *{question[:100]}*...", thread_ts=thread_ts)
         else:
-            # Simple chat — just LLM, no tools, fast reply
+            # Not investigation — contextual reply if in thread, simple chat otherwise
+            # In a thread → always use thread context for the reply
+            # Not in a thread → simple chat
             def run_chat():
                 try:
-                    reply = _simple_chat(config, question)
+                    if is_thread_reply and thread_text:
+                        reply = _contextual_thread_reply(config, question, thread_text)
+                    else:
+                        reply = _simple_chat(config, question)
                     say(text=reply, thread_ts=thread_ts)
                 except Exception as e:
                     log.error(f"Chat failed: {e}", exc_info=True)
@@ -706,6 +762,18 @@ def start_bot(config: "VishwakarmaConfig") -> None:
         channel_id = body["channel"]["id"]
         msg_ts = body["message"]["ts"]
 
+        # Immediately replace buttons with "Saving..." status
+        try:
+            client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text="Saving...",
+                blocks=[{"type": "context", "elements": [
+                    {"type": "mrkdwn", "text": ":hourglass: _Saving learning + investigation pattern..._"}
+                ]}],
+            )
+        except Exception:
+            pass
+
         try:
             from vishwakarma.storage.queries import get_incident
             incident = get_incident(incident_id)
@@ -732,15 +800,52 @@ def start_bot(config: "VishwakarmaConfig") -> None:
             llm = config.make_llm()
             learnings_manager.compact(category, llm.summarize)
 
-            # Replace buttons with confirmation
+            # Update evidence baselines
+            try:
+                from vishwakarma.storage.evidence import mark_evidence_correct
+                mark_evidence_correct(incident_id)
+                log.info(f"[FEEDBACK] Evidence marked correct, baselines updated for {alert_name}")
+            except Exception as e:
+                log.debug(f"[FEEDBACK] Evidence update failed (non-fatal): {e}")
+
+            # Extract and save replayable pattern
+            pattern_saved = False
+            try:
+                from vishwakarma.storage.patterns import extract_pattern_from_rca, save_pattern
+                import uuid
+                tool_outputs = json.loads(incident.get("tool_outputs", "[]")) if incident.get("tool_outputs") else []
+                pattern_data = extract_pattern_from_rca(llm, alert_name, analysis, tool_outputs)
+                if pattern_data:
+                    save_pattern(
+                        pattern_id=str(uuid.uuid4()),
+                        alert_name=alert_name,
+                        root_cause_type=pattern_data["root_cause_type"],
+                        root_cause_detail=pattern_data["root_cause_detail"],
+                        investigation_steps=pattern_data["investigation_steps"],
+                        verification_keywords=pattern_data.get("verification_keywords", []),
+                        verification_anti_keywords=pattern_data.get("verification_anti_keywords", []),
+                        fix=pattern_data["fix"],
+                        incident_id=incident_id,
+                    )
+                    pattern_saved = True
+                    log.info(f"[FEEDBACK] Pattern saved: {alert_name}/{pattern_data['root_cause_type']}")
+            except Exception as e:
+                log.warning(f"[FEEDBACK] Pattern extraction failed (non-fatal): {e}")
+
+            # Replace with detailed confirmation of what was saved
+            saved_items = [f":brain: Learning saved to `{category}`"]
+            if pattern_saved:
+                saved_items.append(f":gear: Investigation pattern saved (`{pattern_data.get('root_cause_type', '?')}`) — will auto-replay on next same alert")
+            saved_items.append(":chart_with_upwards_trend: Evidence baselines updated")
+            saved_text = "\n".join(saved_items)
             client.chat_update(
                 channel=channel_id,
                 ts=msg_ts,
                 text=f"✅ RCA marked correct by <@{user}>",
-                blocks=[{
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": f"✅ *Marked correct by <@{user}>* — root cause added to `{category}` learnings."},
-                }],
+                blocks=[
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f":white_check_mark: *Marked correct by <@{user}>*"}},
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": saved_text}]},
+                ],
             )
         except Exception as e:
             log.error(f"[FEEDBACK] vk_rca_correct failed: {e}", exc_info=True)
@@ -842,6 +947,173 @@ def start_bot(config: "VishwakarmaConfig") -> None:
     t = threading.Thread(target=_start, daemon=True, name="slack-bot")
     t.start()
     log.info("Slack bot started in background thread")
+
+
+def _find_prior_investigation(question: str) -> str:
+    """Search incident DB for prior investigations relevant to the question.
+
+    Extracts keywords from the question and searches recent incidents.
+    Returns formatted context string, or empty string if nothing found.
+    """
+    try:
+        from vishwakarma.storage.queries import search_incidents
+    except Exception:
+        return ""
+
+    q = question.lower()
+
+    # Extract search terms — alert names, service names, keywords
+    search_terms = []
+    # Common alert/service patterns to extract
+    for term in [
+        "rds", "redis", "alb", "5xx", "drainer", "allocator", "producer",
+        "cpu", "memory", "connection", "replication", "login", "ratio",
+        "crash", "oom", "latency", "pod", "timeout",
+    ]:
+        if term in q:
+            search_terms.append(term)
+
+    # Also try significant multi-word phrases
+    for phrase in [
+        "high cpu", "not running", "looks dead", "success rate",
+        "ride to search", "config parse",
+    ]:
+        if phrase in q:
+            search_terms.append(phrase)
+
+    if not search_terms:
+        # Fallback: use the whole question as search
+        search_terms = [question[:60]]
+
+    # Search for each term, deduplicate by incident_id
+    seen_ids: set[str] = set()
+    matches: list[dict] = []
+    for term in search_terms[:3]:  # limit to 3 searches
+        try:
+            results = search_incidents(term, limit=3)
+            for r in results:
+                iid = r.get("incident_id", r.get("id", ""))
+                if iid not in seen_ids:
+                    seen_ids.add(iid)
+                    matches.append(r)
+        except Exception:
+            continue
+
+    if not matches:
+        return ""
+
+    # Format the top 2 most recent matches as context
+    parts = ["## Prior Investigations (from incident DB)"]
+    for m in matches[:2]:
+        title = m.get("title", "?")
+        created = m.get("created_at", "?")
+        analysis = m.get("analysis", "")
+        # Truncate analysis to key findings
+        if len(analysis) > 2000:
+            analysis = analysis[:2000] + "...(truncated)"
+        parts.append(f"### {title} ({created})\n{analysis}")
+
+    return "\n\n".join(parts)
+
+
+def _is_investigation_intent(question: str) -> bool:
+    """Detect if a question requires a full investigation (tools + PDF) vs simple chat.
+
+    Two-tier detection:
+    1. Fast keyword match for obvious investigation queries
+    2. Pattern-based heuristics for edge cases
+
+    Returns True if investigation mode should be triggered.
+    """
+    q = question.lower().strip()
+
+    # ── Tier 1: Obvious NON-investigation (chat) ──
+    # Greetings, meta questions, short casual messages
+    chat_patterns = [
+        "hi", "hello", "hey", "yo", "sup", "thanks", "thank you", "ok", "okay",
+        "good morning", "good evening", "gm", "who are you", "what are you",
+        "who made you", "help", "status", "what can you do",
+    ]
+    if q.rstrip("!?.") in chat_patterns:
+        return False
+    import re as _re
+    if len(q.split()) <= 2 and not any(kw in q for kw in ["why", "crash", "error", "down", "high", "spike", "fail", "5xx", "lag"]):
+        # But if it contains a UUID, it's likely a ride/booking ID to investigate
+        if not _re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', q):
+            return False
+
+    # ── Tier 2: Obvious investigation keywords ──
+    investigation_keywords = [
+        # Infrastructure issues
+        "why", "crash", "crashing", "error", "errors", "5xx", "500", "502", "503", "504",
+        "down", "not working", "failing", "failed", "timeout", "latency",
+        "high cpu", "high memory", "oom", "killed", "evict",
+        "spike", "surge", "drop", "dropped", "degraded",
+        # Alert names
+        "rds", "redis", "alb", "elb", "drainer", "allocator", "producer",
+        "replication", "connection", "pod", "node",
+        # Investigation verbs
+        "investigate", "check", "look into", "find out", "what happened",
+        "root cause", "diagnose", "troubleshoot", "figure out",
+        # Specific entities
+        "ride", "booking", "payment", "search", "ratio",
+        "login", "auth", "otp",
+    ]
+    # Skip if purely explanatory ("explain X", "what is X", "how does X work")
+    if q.startswith(("explain ", "what is ", "what are ", "how does ", "how do ", "tell me about ")):
+        return False
+    if any(kw in q for kw in investigation_keywords):
+        return True
+
+    # ── Tier 3: UUID/ID patterns (someone pasted a ride/booking ID) ──
+    import re
+    if re.search(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', q):
+        return True
+
+    # ── Tier 4: Pasted JSON, log lines, or error messages ──
+    if any(indicator in q for indicator in ['{"', "stacktrace", "exception", "traceback", "FATAL", "WARN", "ERROR"]):
+        return True
+
+    # Default: not an investigation
+    return False
+
+
+def _contextual_thread_reply(config, question: str, thread_context: str) -> str:
+    """Reply to a question in an investigation thread using the thread's context."""
+    import re
+    import litellm
+    model = config.llm.fast_model or config.llm.model
+    # Truncate thread context to avoid exceeding context limits
+    if len(thread_context) > 12000:
+        thread_context = thread_context[:6000] + "\n...(truncated)...\n" + thread_context[-6000:]
+    response = litellm.completion(
+        model=model,
+        api_key=config.llm.api_key,
+        api_base=config.llm.api_base,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are Oogway, an SRE at NammaYatri. "
+                    "You are replying in a Slack thread that contains an alert investigation. "
+                    "The thread context (investigation results) is provided below. "
+                    "Answer the user's question based on the investigation context. "
+                    "Be specific — reference findings, metrics, and evidence from the thread. "
+                    "If the user asks to check something not covered in the investigation, "
+                    "suggest the specific command or tool they should use, or tell them to run "
+                    "`@oogway debug <specific question>` for a deeper follow-up investigation.\n\n"
+                    f"## Investigation Thread Context\n{thread_context}"
+                ),
+            },
+            {"role": "user", "content": question},
+        ],
+        max_tokens=2048,
+        temperature=0.3,
+        timeout=30,
+    )
+    content = response.choices[0].message.content or "I'm not sure — try `@oogway debug <your question>` for a full investigation."
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+    return content or "I'm not sure — try `@oogway debug <your question>` for a full investigation."
 
 
 def _simple_chat(config, question: str) -> str:
@@ -978,7 +1250,7 @@ def _help_text() -> str:
         "@oogway debug RDS CPU high on customer cluster\n"
         "@oogway oracle check RDS CPU spike from 10am\n"
         "@oogway costs\n"
-        "@oogway learn rds atlas-customer-r1 often spikes during morning peak```"
+        "@oogway learn rds db-reader-1 often spikes during morning peak```"
     )
 
 

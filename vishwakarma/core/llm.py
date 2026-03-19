@@ -26,10 +26,17 @@ log = logging.getLogger(__name__)
 litellm.suppress_debug_info = True
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 
+# Cap LiteLLM's internal retry backoff — don't let it wait 60s between retries
+litellm.num_retries = 2              # max 2 retries per call (not infinite)
+litellm.request_timeout = 30         # 30s per attempt
+
 
 class LLMConfig(BaseModel):
     model: str
     fast_model: str | None = None  # cheap/fast model for summarization + compaction
+    # Fallback chains — tried in order, first success wins
+    fast_fallbacks: list[str] = []  # e.g. ["openai/kimi-latest", "openai/glm-flash-experimental"]
+    model_fallbacks: list[str] = []  # e.g. ["openai/glm-latest"]
     api_key: str | None = None
     api_base: str | None = None
     api_version: str | None = None
@@ -240,25 +247,119 @@ class VishwakarmaLLM:
             cached_tokens=cached_tokens,
         )
 
+    def _call_with_fallback(
+        self,
+        models: list[str],
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        timeout: int = 30,
+        tools: list | None = None,
+        total_budget: int = 60,
+    ):
+        """Try models in order, return first successful response.
+
+        Each model gets `timeout` seconds. Total time across all models
+        capped at `total_budget` seconds. Raises the last exception if all fail.
+        """
+        start = time.time()
+        last_error = None
+        for i, model in enumerate(models):
+            # Check total time budget
+            elapsed = time.time() - start
+            if elapsed > total_budget:
+                log.warning(f"Fallback chain exhausted time budget ({total_budget}s)")
+                break
+            remaining = min(timeout, int(total_budget - elapsed))
+            if remaining < 5:
+                break  # not enough time for another attempt
+
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "timeout": remaining,
+                    "num_retries": 1,  # max 1 retry per model in the chain
+                }
+                if self.cfg.api_key:
+                    kwargs["api_key"] = self.cfg.api_key
+                if self.cfg.api_base:
+                    kwargs["api_base"] = self.cfg.api_base
+                if tools:
+                    kwargs["tools"] = tools
+                # Disable reasoning for fast calls (summarize, compress)
+                # Works for GLM-5 (enable_thinking) and Kimi-K2.5 (thinking)
+                if not tools:
+                    kwargs["extra_body"] = {
+                        "chat_template_kwargs": {"enable_thinking": False, "thinking": False}
+                    }
+                response = completion(**kwargs)
+                if i > 0:
+                    log.info(f"Fallback to {model} succeeded (primary failed)")
+                return response
+            except Exception as e:
+                last_error = e
+                error_type = type(e).__name__
+                # Rate limit: extract reset time and wait briefly before next attempt
+                if "RateLimit" in error_type or "429" in str(e):
+                    import re
+                    reset_match = re.search(r'resets at: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', str(e))
+                    if reset_match:
+                        from datetime import datetime, timezone
+                        try:
+                            reset_time = datetime.strptime(reset_match.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                            wait_secs = (reset_time - datetime.now(timezone.utc)).total_seconds()
+                            if 0 < wait_secs <= 10:  # only wait if reset is within 10s
+                                log.info(f"Rate limit resets in {wait_secs:.0f}s — waiting")
+                                time.sleep(min(wait_secs + 0.5, 10))
+                                continue  # retry same model after rate limit reset
+                        except Exception:
+                            pass
+                log.warning(f"Model {model} failed ({error_type}: {str(e)[:80]}), "
+                           f"{'trying next' if i < len(models) - 1 else 'no more fallbacks'} "
+                           f"[{time.time() - start:.1f}s elapsed]")
+        raise last_error  # type: ignore
+
+    def _get_fast_chain(self) -> list[str]:
+        """Get ordered list of fast models to try."""
+        primary = self.cfg.fast_model or self.cfg.model
+        fallbacks = self.cfg.fast_fallbacks or []
+        chain = [primary] + [f for f in fallbacks if f != primary]
+        # Always include main model as last resort
+        if self.cfg.model not in chain:
+            chain.append(self.cfg.model)
+        return chain
+
+    def _get_main_chain(self) -> list[str]:
+        """Get ordered list of main models to try."""
+        chain = [self.cfg.model] + (self.cfg.model_fallbacks or [])
+        return chain
+
     def summarize(self, prompt: str) -> str:
         """
         Fast, cheap LLM call to compress a long tool output.
-        Uses fast_model if configured (open-fast), otherwise falls back to main model.
+        Uses fast model chain with fallbacks.
         """
-        model = self.cfg.fast_model or self.cfg.model
         try:
-            response = completion(
-                model=model,
+            response = self._call_with_fallback(
+                models=self._get_fast_chain(),
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=4096,   # 1024 was too small for compaction summaries
-                timeout=60,
-                **({"api_key": self.cfg.api_key} if self.cfg.api_key else {}),
-                **({"api_base": self.cfg.api_base} if self.cfg.api_base else {}),
+                max_tokens=4096,
+                timeout=30,  # fast calls should be fast — 30s timeout per model
             )
-            return response.choices[0].message.content or prompt[:2000]
+            msg = response.choices[0].message
+            content = msg.content or ""
+            # Reasoning models may put content in reasoning_content
+            if not content.strip():
+                content = getattr(msg, "reasoning_content", "") or ""
+            # Strip reasoning preamble if present
+            import re
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            return content or prompt[:2000]
         except Exception as e:
-            log.warning(f"Summarization failed: {e} — truncating instead")
+            log.warning(f"All summarization models failed: {e} — truncating instead")
             return prompt[:4000] + "\n... [truncated]"
 
     def build_meta(self, steps: int, compactions: int, start_time: float) -> InvestigationMeta:

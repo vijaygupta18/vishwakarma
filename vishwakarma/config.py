@@ -206,6 +206,8 @@ class VishwakarmaConfig:
         self.llm = LLMConfig(
             model=_env("VK_MODEL", llm_cfg.get("model", "gpt-4o")),
             fast_model=_env("VK_FAST_MODEL", llm_cfg.get("fast_model")),
+            fast_fallbacks=llm_cfg.get("fast_fallbacks", []),
+            model_fallbacks=llm_cfg.get("model_fallbacks", []),
             api_key=_env("VK_API_KEY", llm_cfg.get("api_key")),
             api_base=_env("VK_API_BASE", llm_cfg.get("api_base")),
             api_version=_env("VK_API_VERSION", llm_cfg.get("api_version")),
