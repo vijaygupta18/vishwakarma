@@ -16,7 +16,7 @@
 
 ---
 
-## 🗺️ Architecture Overview
+## 🗺️ Overall Architecture Overview
 
 ```mermaid
 graph TB
