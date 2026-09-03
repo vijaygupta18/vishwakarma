@@ -582,7 +582,7 @@ vishwakarma/
 │   ├── fast_rca.py         Fast-path RCA for alerts with known root-cause patterns
 │   ├── learnings.py        Learnings store (facts injected into prompts)
 │   ├── compaction.py       Context compaction for long investigations
-│   ├── safeguards.py       Guardrails for tool execution
+│   ├── safeguards.py       Loop-prevention safeguards for repeated tool calls
 │   └── models.py           Pydantic data models
 │
 ├── 🔌 plugins/
@@ -604,11 +604,11 @@ vishwakarma/
 │
 ├── 🗄️ storage/
 │   ├── db.py               SQLite incident storage + full-text search
-│   ├── evidence.py         Evidence memory (tool outputs reused across investigations)
+│   ├── evidence.py         Evidence memory — auto-resolves known patterns from confirmed RCAs
 │   └── patterns.py         Pattern learning from past incidents
 │
 ├── 🖥️ ui/                  Web dashboard (FastAPI routes + static assets)
-├── ⏰ scheduler/           Scheduled jobs (e.g. cost_report.py)
+├── ⏰ scheduler/           Daily AWS cost report to Slack (cost_report.py)
 ├── 🔧 utils/               Logging, caching, Slack formatting, streaming helpers
 │
 ├── server.py               FastAPI server + pre-enrichment + alert routing
