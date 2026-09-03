@@ -382,7 +382,7 @@ Alert name: "RDS_HighCPU_atlas-customer-r1"
 ### 2️⃣ Configure
 
 ```bash
-cp config.example.yaml config.yaml
+cp k8s/config.example.yaml config.yaml
 ```
 
 ```yaml
@@ -532,7 +532,13 @@ When a category grows beyond 50 facts or 5KB, LLM consolidates it — merging du
 
 ### 6️⃣ Deploy to Kubernetes
 
+The manifests in `k8s/` ship as `*.example.yaml` templates. Copy them, fill in your image, namespace and secrets
+(the copies `k8s/rbac.yaml` and `k8s/deployment.yaml` are gitignored so local values never get committed):
+
 ```bash
+cp k8s/rbac.example.yaml k8s/rbac.yaml
+cp k8s/deployment.example.yaml k8s/deployment.yaml
+
 # RBAC (ServiceAccount + ClusterRole)
 kubectl apply -f k8s/rbac.yaml
 
@@ -543,7 +549,7 @@ kubectl apply -f k8s/deployment.yaml
 kubectl rollout status deployment/vishwakarma -n monitoring
 ```
 
-### 6️⃣ Alert Ingestion
+### 7️⃣ Alert Ingestion
 
 **Option A — AlertManager / VMAlertManager**
 ```yaml
@@ -573,19 +579,23 @@ vishwakarma/
 │   ├── prompt.py           System prompt builder (composable sections)
 │   ├── tools.py            Tool definitions + executor
 │   ├── toolset_manager.py  Loads and manages toolsets
+│   ├── fast_rca.py         Fast-path RCA for alerts with known root-cause patterns
+│   ├── learnings.py        Learnings store (facts injected into prompts)
+│   ├── compaction.py       Context compaction for long investigations
+│   ├── safeguards.py       Guardrails for tool execution
 │   └── models.py           Pydantic data models
 │
 ├── 🔌 plugins/
-│   ├── toolsets/           bash, prometheus, elasticsearch, grafana, aws ...
+│   ├── toolsets/           bash, prometheus, elasticsearch, grafana, aws, database, newrelic ...
 │   ├── runbooks/
 │   │   ├── aws/            RDS, ALB, Redis runbooks
 │   │   └── custom/         Your cluster-specific runbooks
 │   ├── agents/
 │   │   └── agents.json     Alert → runbook routing catalog
-│   ├── channels/
-│   │   └── alertmanager/   AlertManager webhook parser
+│   ├── channels/           alertmanager, github, jira, opsgenie, pagerduty parsers
 │   └── relays/
-│       └── slack/          Slack result poster (RCA + PDF)
+│       ├── slack/          Slack result poster (RCA + PDF)
+│       └── pagerduty/      PagerDuty result relay
 │
 ├── 🤖 bot/
 │   ├── slack.py            Slack Socket Mode bot + CloudWatch detection
@@ -593,14 +603,24 @@ vishwakarma/
 │   └── pdf.py              Branded PDF RCA report generation
 │
 ├── 🗄️ storage/
-│   └── db.py               SQLite incident storage + full-text search
+│   ├── db.py               SQLite incident storage + full-text search
+│   ├── evidence.py         Evidence memory (tool outputs reused across investigations)
+│   └── patterns.py         Pattern learning from past incidents
+│
+├── 🖥️ ui/                  Web dashboard (FastAPI routes + static assets)
+├── ⏰ scheduler/           Scheduled jobs (e.g. cost_report.py)
+├── 🔧 utils/               Logging, caching, Slack formatting, streaming helpers
 │
 ├── server.py               FastAPI server + pre-enrichment + alert routing
+├── cli.py                  `vk` CLI entrypoint (serve, probe, oracle, scan, incidents ...)
+├── interactive.py          Interactive multi-turn `vk oracle` session
 └── config.py               Config loader (YAML + env vars)
 
 k8s/
-├── deployment.yaml         PVC + ConfigMap + Deployment + Service
-└── rbac.yaml               ServiceAccount + ClusterRole + Binding
+├── config.example.yaml     Sample config.yaml
+├── deployment.example.yaml PVC + ConfigMap + Deployment + Service (copy → deployment.yaml)
+├── rbac.example.yaml       ServiceAccount + ClusterRole + Binding (copy → rbac.yaml)
+└── iam-cost-report-policy.json  IAM policy for the cost report scheduler
 
 lambda/
 └── handler.py              CloudWatch SNS → AlertManager forwarder

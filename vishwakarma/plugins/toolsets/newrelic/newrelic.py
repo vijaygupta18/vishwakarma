@@ -100,12 +100,14 @@ class NewRelicToolset(Toolset):
     def _nrql(self, params: dict) -> ToolOutput:
         query = params["query"]
         invocation = f"newrelic_nrql({query[:80]})"
+        # Escape outside the f-string: backslashes in f-string expressions are a SyntaxError before Python 3.12
+        escaped_query = query.replace('"', '\\"')
         gql = {
             "query": f"""
             {{
               actor {{
                 account(id: {self._account_id}) {{
-                  nrql(query: "{query.replace('"', '\\"')}") {{
+                  nrql(query: "{escaped_query}") {{
                     results
                   }}
                 }}

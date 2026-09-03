@@ -442,6 +442,7 @@ class InvestigationEngine:
             collected_content = ""
             collected_tool_calls = []
             llm_ok = False
+            last_llm_err: Exception | None = None
             for _attempt in range(_MAX_LLM_RETRIES):
                 collected_content = ""
                 collected_tool_calls = []
@@ -458,12 +459,13 @@ class InvestigationEngine:
                     llm_ok = True
                     break  # success
                 except Exception as llm_err:
+                    last_llm_err = llm_err
                     log.warning("LLM stream error on step %d (attempt %d/%d): %s",
                                 step, _attempt + 1, _MAX_LLM_RETRIES, llm_err)
                     yield {"type": "status", "message": f"LLM error (attempt {_attempt + 1}/{_MAX_LLM_RETRIES}): {type(llm_err).__name__}"}
 
             if not llm_ok:
-                yield {"type": "done", "content": f"Investigation failed after {_MAX_LLM_RETRIES} LLM retries: {llm_err}", "messages": messages}
+                yield {"type": "done", "content": f"Investigation failed after {_MAX_LLM_RETRIES} LLM retries: {last_llm_err}", "messages": messages}
                 return
 
             if not collected_tool_calls:

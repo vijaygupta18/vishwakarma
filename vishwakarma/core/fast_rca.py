@@ -63,29 +63,33 @@ _DECISION_TREES: dict[str, str] = {}
 
 
 
+def _summarize_checks(checks: dict | None, max_chars: int = 600) -> str:
+    """Flatten check results into a compact 'name: output' string for the fast_model prompt."""
+    parts = []
+    for name, output in (checks or {}).items():
+        text = str(output).strip() if output is not None else ""
+        if not text:
+            continue
+        text = " ".join(text.split())
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
+        parts.append(f"{name}: {text}")
+    return " | ".join(parts) if parts else "no check results"
+
+
 def synthesize_fast_rca(llm, checks: dict, alert_name: str) -> dict:
     """
     Single fast_model LLM call to classify the root cause from check results.
 
     Returns dict with: root_cause, confidence, scenario, impact, suggested_fix, evidence_summary
     """
-    # Pick the right decision tree; default to ALB if alert contains "5xx"
-    decision_tree = _DECISION_TREES.get(alert_name)
-    if not decision_tree and "5xx" in alert_name.lower():
-        decision_tree = _ALB_5XX_DECISION_TREE
-    if not decision_tree and ("replication" in alert_name.lower() or "replica" in alert_name.lower() or "slot" in alert_name.lower()):
-        decision_tree = _RDS_REPLICATION_LAG_DECISION_TREE
-    if not decision_tree and ("rds" in alert_name.lower() or ("cpu" in alert_name.lower() and "redis" not in alert_name.lower())):
-        decision_tree = _RDS_CPU_DECISION_TREE
-    if not decision_tree and ("ratio" in alert_name.lower() or "search" in alert_name.lower()):
-        decision_tree = _RATIO_DROP_DECISION_TREE
-    if not decision_tree and "redis" in alert_name.lower():
-        decision_tree = _REDIS_DECISION_TREE
-    if not decision_tree:
-        decision_tree = _DRAINER_DECISION_TREE
+    # Pick the decision tree registered for this alert (if any) — see _DECISION_TREES above
+    decision_tree = _DECISION_TREES.get(alert_name, "")
 
     checks_text = _summarize_checks(checks)
     prompt = f"""{alert_name}. {checks_text}. Compare current vs yesterday_*. If current similar to yesterday=normal. Return JSON: {{"root_cause":"x","confidence":"high","scenario":"H","impact":"No user impact","suggested_fix":"No action needed","evidence_summary":"x"}}"""
+    if decision_tree:
+        prompt = f"Decision tree:\n{decision_tree}\n\n{prompt}"
 
     try:
         # Use streaming to avoid timeout while model is producing tokens

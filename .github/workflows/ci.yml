@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Syntax & undefined-name check (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      # Only hard errors: syntax errors, undefined names, invalid prints/comparisons.
+      # Target 3.11 to match the runtime image in the Dockerfile.
+      - name: ruff (syntax + undefined names)
+        run: ruff check --isolated --target-version py311 --select E9,F63,F7,F82 vishwakarma lambda
+
+      - name: Byte-compile all modules
+        run: python -m compileall -q vishwakarma lambda
